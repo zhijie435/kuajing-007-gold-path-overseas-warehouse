@@ -177,10 +177,40 @@
           </el-alert>
         </div>
 
+        <div v-if="submitError" style="margin-bottom:20px">
+          <el-alert type="error" :closable="false" show-icon>
+            <template #title>
+              <div style="font-weight:600">订单提交失败</div>
+            </template>
+            <div style="margin-top:8px">
+              <p style="margin:0 0 8px 0;color:#F56C6C">{{ submitError.message }}</p>
+              <p v-if="submitError.rollback" style="margin:0 0 8px 0;color:#67C23A">
+                ✓ 系统已自动回滚，库存未扣减，订单未创建
+              </p>
+              <p v-if="submitError.retryable" style="margin:0;color:#909399">
+                您可以点击下方「重试提交」按钮再次尝试，无需重新填写表单
+              </p>
+              <div v-if="submitError.traceId" style="margin-top:8px;font-size:12px;color:#C0C4CC">
+                Trace ID: {{ submitError.traceId }}
+              </div>
+            </div>
+          </el-alert>
+        </div>
+
         <el-form-item style="margin-top:30px">
+          <el-button
+            v-if="submitError && submitError.retryable"
+            type="warning"
+            size="large"
+            :loading="submitting"
+            @click="retrySubmit"
+          >
+            <el-icon><Refresh /></el-icon>
+            重试提交
+          </el-button>
           <el-button type="primary" size="large" :loading="submitting" @click="submitOrder">
             <el-icon><Check /></el-icon>
-            确认下单
+            {{ submitError ? '重新提交' : '确认下单' }}
           </el-button>
           <el-button size="large" @click="resetForm">重置</el-button>
         </el-form-item>
@@ -193,7 +223,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Position, Check } from '@element-plus/icons-vue'
+import { Position, Check, Refresh } from '@element-plus/icons-vue'
 import { getProductList } from '@/api/product'
 import { calculateRoute } from '@/api/warehouse'
 import { createOrder } from '@/api/order'
@@ -206,6 +236,7 @@ const selectedSku = ref('')
 const routing = ref(false)
 const submitting = ref(false)
 const routeResult = ref(null)
+const submitError = ref(null)
 
 const form = reactive({
   items: [],
@@ -369,6 +400,8 @@ const validateBeforeSubmit = () => {
 const submitOrder = async () => {
   if (!formRef.value) return
 
+  submitError.value = null
+
   try {
     await formRef.value.validate()
   } catch (e) {
@@ -430,12 +463,15 @@ const submitOrder = async () => {
     console.error('创建订单失败:', e)
     ElMessage.closeAll()
     if (!submitSuccess) {
-      const errorMsg = e.message || '订单提交失败，请重试'
-      ElMessage.error({
-        message: errorMsg,
-        duration: 4000,
-        showClose: true
-      })
+      const errorData = e.data || {}
+      submitError.value = {
+        message: e.message || '订单提交失败，请重试',
+        rollback: errorData.rollback === true,
+        retryable: errorData.retryable !== false,
+        errorType: errorData.error_type,
+        traceId: errorData.trace_id,
+        details: errorData.details
+      }
     }
   } finally {
     if (!submitSuccess) {
@@ -448,6 +484,12 @@ const resetForm = () => {
   if (formRef.value) formRef.value.resetFields()
   form.items = []
   routeResult.value = null
+  submitError.value = null
+}
+
+const retrySubmit = async () => {
+  if (submitting.value) return
+  await submitOrder()
 }
 
 onMounted(loadProducts)

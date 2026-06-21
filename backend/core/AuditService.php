@@ -145,4 +145,144 @@ class AuditService {
 
         return $auditNo;
     }
+
+    public function logOperation($data) {
+        $logData = [
+            'trace_id' => $data['trace_id'] ?? null,
+            'action' => ($data['module'] ?? 'SYSTEM') . ':' . ($data['action'] ?? 'UNKNOWN'),
+            'result' => !empty($data['success']) ? 'success' : 'failure',
+            'user_id' => $data['operator_id'] ?? null,
+            'role' => $data['operator_type'] ?? null,
+            'warehouse_code' => $data['warehouse_code'] ?? null,
+            'target_type' => $data['target_type'] ?? null,
+            'target_id' => $data['target_id'] ?? null,
+            'client_ip' => $data['client_ip'] ?? null,
+            'user_agent' => $data['user_agent'] ?? null,
+            'request_uri' => $data['request_uri'] ?? null,
+            'request_method' => $data['request_method'] ?? null,
+            'request_params' => !empty($data['request_data'])
+                ? json_encode($data['request_data'], JSON_UNESCAPED_UNICODE)
+                : null,
+            'response_code' => isset($data['response_code']) ? (int)$data['response_code'] : 0,
+            'error_message' => $data['error_message'] ?? null,
+            'extra_data' => !empty($data['response_data'])
+                ? json_encode($data['response_data'], JSON_UNESCAPED_UNICODE)
+                : null,
+            'created_at' => date('Y-m-d H:i:s'),
+        ];
+
+        try {
+            $this->db->insert('audit_logs', $logData);
+            return $this->db->lastInsertId();
+        } catch (Exception $e) {
+            error_log('Operation audit log failed: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function queryRouteAudits($params = []) {
+        $page = isset($params['page']) ? max(1, (int)$params['page']) : 1;
+        $pageSize = isset($params['page_size']) ? min(100, max(1, (int)$params['page_size'])) : 20;
+        $offset = ($page - 1) * $pageSize;
+
+        $where = ['1=1'];
+        $bindParams = [];
+
+        if (!empty($params['warehouse_code'])) {
+            $where[] = 'selected_warehouse_code = ?';
+            $bindParams[] = $params['warehouse_code'];
+        }
+        if (!empty($params['shipping_country'])) {
+            $where[] = 'shipping_country = ?';
+            $bindParams[] = $params['shipping_country'];
+        }
+        if (isset($params['route_result']) && $params['route_result'] !== '') {
+            $where[] = 'route_result = ?';
+            $bindParams[] = (int)$params['route_result'];
+        }
+        if (!empty($params['app_id'])) {
+            $where[] = 'app_id = ?';
+            $bindParams[] = $params['app_id'];
+        }
+        if (!empty($params['start_time'])) {
+            $where[] = 'created_at >= ?';
+            $bindParams[] = $params['start_time'];
+        }
+        if (!empty($params['end_time'])) {
+            $where[] = 'created_at <= ?';
+            $bindParams[] = $params['end_time'];
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $countSql = "SELECT COUNT(*) as cnt FROM warehouse_route_audit_logs WHERE $whereSql";
+        $totalRow = $this->db->fetchOne($countSql, $bindParams);
+        $total = (int)$totalRow['cnt'];
+
+        $sql = "SELECT * FROM warehouse_route_audit_logs WHERE $whereSql ORDER BY id DESC LIMIT $offset, $pageSize";
+        $list = $this->db->fetchAll($sql, $bindParams);
+
+        return [
+            'list' => $list,
+            'total' => $total,
+            'page' => $page,
+            'page_size' => $pageSize,
+        ];
+    }
+
+    public function queryOperationAudits($params = []) {
+        $page = isset($params['page']) ? max(1, (int)$params['page']) : 1;
+        $pageSize = isset($params['page_size']) ? min(100, max(1, (int)$params['page_size'])) : 20;
+        $offset = ($page - 1) * $pageSize;
+
+        $where = ['1=1'];
+        $bindParams = [];
+
+        if (!empty($params['action'])) {
+            $where[] = 'action = ?';
+            $bindParams[] = $params['action'];
+        }
+        if (!empty($params['module'])) {
+            $where[] = 'action LIKE ?';
+            $bindParams[] = $params['module'] . ':%';
+        }
+        if (!empty($params['user_id'])) {
+            $where[] = 'user_id = ?';
+            $bindParams[] = $params['user_id'];
+        }
+        if (!empty($params['target_type'])) {
+            $where[] = 'target_type = ?';
+            $bindParams[] = $params['target_type'];
+        }
+        if (!empty($params['target_id'])) {
+            $where[] = 'target_id = ?';
+            $bindParams[] = $params['target_id'];
+        }
+        if (isset($params['result']) && $params['result'] !== '') {
+            $where[] = 'result = ?';
+            $bindParams[] = $params['result'];
+        }
+        if (!empty($params['start_time'])) {
+            $where[] = 'created_at >= ?';
+            $bindParams[] = $params['start_time'];
+        }
+        if (!empty($params['end_time'])) {
+            $where[] = 'created_at <= ?';
+            $bindParams[] = $params['end_time'];
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $countSql = "SELECT COUNT(*) as cnt FROM audit_logs WHERE $whereSql";
+        $totalRow = $this->db->fetchOne($countSql, $bindParams);
+        $total = (int)$totalRow['cnt'];
+
+        $sql = "SELECT * FROM audit_logs WHERE $whereSql ORDER BY id DESC LIMIT $offset, $pageSize";
+        $list = $this->db->fetchAll($sql, $bindParams);
+
+        return [
+            'list' => $list,
+            'total' => $total,
+            'page' => $page,
+            'page_size' => $pageSize,
+        ];
+    }
 }

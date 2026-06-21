@@ -92,7 +92,14 @@ try {
             $responseCode = 1;
             $responseMessage = $result['message'];
             $httpStatusCode = 400;
-            Response::error($responseMessage, $responseCode, $httpStatusCode);
+            $errorData = [
+                'trace_id' => $traceId,
+                'error_type' => $result['error_type'] ?? 'UNKNOWN_ERROR',
+                'rollback' => $result['rollback'] ?? false,
+                'retryable' => $result['retryable'] ?? false,
+                'details' => $result['details'] ?? null
+            ];
+            Response::json($errorData, $responseCode, $responseMessage, $httpStatusCode);
         }
     }
 
