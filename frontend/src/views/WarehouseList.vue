@@ -48,13 +48,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { getWarehouseList, getWarehouseInventory } from '@/api/warehouse'
+import { orderStore } from '@/store/order'
+
+const route = useRoute()
 
 const list = ref([])
 const invVisible = ref(false)
 const invTitle = ref('')
 const inventory = ref([])
+const lastRefreshVersion = ref(0)
 
 const loadList = async () => {
   try {
@@ -74,7 +79,34 @@ const viewInventory = async (w) => {
   }
 }
 
-onMounted(loadList)
+watch(
+  () => orderStore.refreshVersion,
+  (newVal) => {
+    if (newVal !== lastRefreshVersion.value) {
+      lastRefreshVersion.value = newVal
+      loadList()
+    }
+  }
+)
+
+watch(
+  () => route.fullPath,
+  (newPath) => {
+    if (newPath === '/warehouses') {
+      if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+        lastRefreshVersion.value = orderStore.refreshVersion
+        loadList()
+      }
+    }
+  }
+)
+
+onMounted(() => {
+  if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+    lastRefreshVersion.value = orderStore.refreshVersion
+  }
+  loadList()
+})
 </script>
 
 <style scoped>

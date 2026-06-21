@@ -473,23 +473,39 @@ class FulfillmentCallbackService {
             return ['success' => true, 'message' => '订单已签收，跳过重复回调', 'skipped' => true, 'error_type' => 'DUPLICATE_CALLBACK'];
         }
 
+        $callbackWarehouseCode = $data['warehouse_code'];
+        $warehouse = $this->db->fetchOne(
+            "SELECT id, warehouse_code FROM warehouses WHERE warehouse_code = ? LIMIT 1",
+            [$callbackWarehouseCode]
+        );
+        if (!$warehouse) {
+            return ['success' => false, 'message' => "仓库编码 [{$callbackWarehouseCode}] 不存在", 'error_type' => 'WAREHOUSE_NOT_FOUND'];
+        }
+
+        $warehouseIdSynced = empty($order['warehouse_id']) || (int)$order['warehouse_id'] !== (int)$warehouse['id'];
+
         $this->db->beginTransaction();
         try {
+            $updateData = [
+                'order_status' => 6,
+                'fulfillment_status' => 4,
+                'actual_delivery_date' => $data['deliver_time'] ?? date('Y-m-d'),
+                'warehouse_code' => $callbackWarehouseCode,
+            ];
+            if ($warehouseIdSynced) {
+                $updateData['warehouse_id'] = $warehouse['id'];
+            }
             $this->db->update(
                 'orders',
-                [
-                    'order_status' => 6,
-                    'fulfillment_status' => 4,
-                    'actual_delivery_date' => $data['deliver_time'] ?? date('Y-m-d'),
-                ],
+                $updateData,
                 'order_no = ?',
                 [$data['order_no']]
             );
 
             $this->addTrack($order['id'], $order['order_no'], 'DELIVERED', 'success',
-                $data['warehouse_code'],
+                $callbackWarehouseCode,
                 "订单已签收" . (isset($data['signed_by']) ? "，签收人: {$data['signed_by']}" : ''),
-                $data
+                array_merge($data, ['warehouse_id_synced' => $warehouseIdSynced])
             );
 
             $this->db->commit();
@@ -500,6 +516,7 @@ class FulfillmentCallbackService {
                 'new_order_status' => 6,
                 'old_fulfillment_status' => $order['fulfillment_status'],
                 'new_fulfillment_status' => 4,
+                'warehouse_id_synced' => $warehouseIdSynced,
             ];
         } catch (Exception $e) {
             $this->db->rollBack();
@@ -518,19 +535,37 @@ class FulfillmentCallbackService {
             return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
+        $callbackWarehouseCode = $data['warehouse_code'];
+        $warehouse = $this->db->fetchOne(
+            "SELECT id, warehouse_code FROM warehouses WHERE warehouse_code = ? LIMIT 1",
+            [$callbackWarehouseCode]
+        );
+        if (!$warehouse) {
+            return ['success' => false, 'message' => "仓库编码 [{$callbackWarehouseCode}] 不存在", 'error_type' => 'WAREHOUSE_NOT_FOUND'];
+        }
+
+        $warehouseIdSynced = empty($order['warehouse_id']) || (int)$order['warehouse_id'] !== (int)$warehouse['id'];
+
         $this->db->beginTransaction();
         try {
+            $updateData = [
+                'fulfillment_status' => 9,
+                'warehouse_code' => $callbackWarehouseCode,
+            ];
+            if ($warehouseIdSynced) {
+                $updateData['warehouse_id'] = $warehouse['id'];
+            }
             $this->db->update(
                 'orders',
-                ['fulfillment_status' => 9],
+                $updateData,
                 'order_no = ?',
                 [$data['order_no']]
             );
 
             $this->addTrack($order['id'], $order['order_no'], 'EXCEPTION', $data['exception_type'],
-                $data['warehouse_code'],
+                $callbackWarehouseCode,
                 "异常 [{$data['exception_type']}]: {$data['exception_message']}",
-                $data
+                array_merge($data, ['warehouse_id_synced' => $warehouseIdSynced])
             );
 
             $this->db->commit();
@@ -540,6 +575,7 @@ class FulfillmentCallbackService {
                 'old_fulfillment_status' => $order['fulfillment_status'],
                 'new_fulfillment_status' => 9,
                 'exception_type' => $data['exception_type'],
+                'warehouse_id_synced' => $warehouseIdSynced,
             ];
         } catch (Exception $e) {
             $this->db->rollBack();

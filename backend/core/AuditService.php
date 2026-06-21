@@ -146,6 +146,76 @@ class AuditService {
         return $auditNo;
     }
 
+    public function logWarehouseRoute($data) {
+        $remapped = [
+            'trace_id' => $data['trace_id'] ?? $this->generateAuditNo('TRC'),
+            'audit_no' => $data['audit_no'] ?? $this->generateAuditNo('WRT'),
+            'app_id' => $data['client_key'] ?? null,
+            'items' => $data['items'] ?? null,
+            'shipping_country' => $data['shipping_country'] ?? null,
+            'shipping_state' => $data['shipping_state'] ?? null,
+            'total_weight' => $data['total_weight'] ?? null,
+            'selected_warehouse' => $data['selected_warehouse'] ?? null,
+            'alternatives' => $data['alternatives'] ?? null,
+            'success' => $data['success'] ?? false,
+            'error_type' => $data['error_type'] ?? null,
+            'error_message' => $data['error_message'] ?? null,
+            'client_ip' => $data['client_ip'] ?? PermissionService::getClientIp(),
+            'request_at' => date('Y-m-d H:i:s'),
+            'duration_ms' => $data['duration_ms'] ?? 0,
+        ];
+
+        if (!empty($data['selected_warehouse'])) {
+            $sw = $data['selected_warehouse'];
+            $remapped['selected_warehouse_id'] = $sw['warehouse_id'] ?? null;
+            $remapped['selected_warehouse_code'] = $sw['warehouse_code'] ?? null;
+            $remapped['selected_warehouse_name'] = $sw['warehouse_name'] ?? null;
+            $remapped['shipping_cost'] = $sw['shipping_cost'] ?? null;
+            $remapped['avg_shipping_days'] = $sw['avg_shipping_days'] ?? null;
+            $remapped['estimated_delivery_date'] = $sw['estimated_delivery_date'] ?? null;
+        }
+        $remapped['route_result'] = !empty($remapped['success']) ? 1 : 0;
+        $remapped['request_items'] = !empty($remapped['items'])
+            ? json_encode($remapped['items'], JSON_UNESCAPED_UNICODE)
+            : null;
+
+        $logData = [
+            'trace_id' => $remapped['trace_id'],
+            'audit_no' => $remapped['audit_no'],
+            'app_id' => $remapped['app_id'],
+            'request_items' => $remapped['request_items'],
+            'shipping_country' => $remapped['shipping_country'],
+            'shipping_state' => $remapped['shipping_state'],
+            'total_weight' => $remapped['total_weight'],
+            'selected_warehouse_id' => $remapped['selected_warehouse_id'] ?? null,
+            'selected_warehouse_code' => $remapped['selected_warehouse_code'] ?? null,
+            'selected_warehouse_name' => $remapped['selected_warehouse_name'] ?? null,
+            'shipping_cost' => $remapped['shipping_cost'] ?? null,
+            'avg_shipping_days' => $remapped['avg_shipping_days'] ?? null,
+            'estimated_delivery_date' => $remapped['estimated_delivery_date'] ?? null,
+            'alternatives' => !empty($remapped['alternatives'])
+                ? json_encode($remapped['alternatives'], JSON_UNESCAPED_UNICODE)
+                : null,
+            'route_result' => $remapped['route_result'],
+            'error_type' => $remapped['error_type'],
+            'error_message' => $remapped['error_message'],
+            'client_ip' => $remapped['client_ip'],
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+            'request_at' => $remapped['request_at'],
+            'response_at' => date('Y-m-d H:i:s'),
+            'duration_ms' => $remapped['duration_ms'],
+            'created_at' => date('Y-m-d H:i:s'),
+        ];
+
+        try {
+            $this->db->insert('warehouse_route_audit_logs', $logData);
+        } catch (Exception $e) {
+            error_log('Warehouse route audit log failed: ' . $e->getMessage());
+        }
+
+        return $remapped['audit_no'];
+    }
+
     public function logOperation($data) {
         $logData = [
             'trace_id' => $data['trace_id'] ?? null,

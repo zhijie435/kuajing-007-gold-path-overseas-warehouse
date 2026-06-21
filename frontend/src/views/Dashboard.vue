@@ -204,7 +204,8 @@ watch(
   () => orderStore.refreshVersion,
   (newVal) => {
     if (newVal !== lastRefreshVersion.value) {
-      loadData(true)
+      lastRefreshVersion.value = newVal
+      loadData()
     }
   }
 )
@@ -213,7 +214,10 @@ watch(
   () => route.fullPath,
   (newPath) => {
     if (newPath === '/') {
-      loadData(true)
+      if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+        lastRefreshVersion.value = orderStore.refreshVersion
+        loadData()
+      }
     }
   }
 )
@@ -225,7 +229,9 @@ const goWarehouses = () => router.push('/warehouses')
 const viewOrder = (no) => router.push('/orders/' + no)
 
 onMounted(() => {
-  lastRefreshVersion.value = orderStore.refreshVersion
+  if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+    lastRefreshVersion.value = orderStore.refreshVersion
+  }
   loadData()
 })
 </script>

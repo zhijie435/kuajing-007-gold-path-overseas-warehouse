@@ -225,7 +225,8 @@ watch(
   () => orderStore.refreshVersion,
   (newVal) => {
     if (newVal !== lastRefreshVersion.value) {
-      loadList(true)
+      lastRefreshVersion.value = newVal
+      loadList()
     }
   }
 )
@@ -234,15 +235,20 @@ watch(
   () => route.fullPath,
   (newPath, oldPath) => {
     if (newPath.startsWith('/orders') && !newPath.startsWith('/orders/')) {
-      if (oldPath && oldPath.startsWith('/orders/')) {
-        nextTick(() => loadList(true))
+      if (oldPath && !oldPath.startsWith('/orders')) {
+        if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+          lastRefreshVersion.value = orderStore.refreshVersion
+          loadList()
+        }
       }
     }
   }
 )
 
 onMounted(() => {
-  lastRefreshVersion.value = orderStore.refreshVersion
+  if (orderStore.refreshVersion !== lastRefreshVersion.value) {
+    lastRefreshVersion.value = orderStore.refreshVersion
+  }
   loadList()
 })
 </script>

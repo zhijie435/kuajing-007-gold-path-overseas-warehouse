@@ -453,6 +453,8 @@ const submitOrder = async () => {
       })
       orderStore.triggerRefresh()
 
+      resetForm()
+
       setTimeout(() => {
         router.push('/orders/' + orderNo)
       }, 1000)
