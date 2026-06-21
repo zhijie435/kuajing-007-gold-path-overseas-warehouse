@@ -13,28 +13,183 @@ class OrderService {
     }
 
     /**
-     * 创建订单：包含路由决策、库存锁定、订单持久化
+     * 校验订单参数
      */
-    public function createOrder($data) {
-        $required = ['items', 'customer_name', 'customer_phone', 'shipping_country', 'shipping_address'];
-        foreach ($required as $field) {
-            if (empty($data[$field])) {
-                return ['success' => false, 'message' => "参数 {$field} 不能为空"];
+    private function validateOrderData($data) {
+        $errors = [];
+        $clean = [];
+
+        $requiredFields = [
+            'items' => '订单商品',
+            'customer_name' => '收件人姓名',
+            'customer_phone' => '联系电话',
+            'shipping_country' => '收货国家',
+            'shipping_address' => '详细地址'
+        ];
+
+        foreach ($requiredFields as $field => $label) {
+            if (!isset($data[$field]) || $data[$field] === '' || $data[$field] === null) {
+                $errors[] = "{$label}不能为空";
             }
         }
 
-        if (!is_array($data['items']) || count($data['items']) === 0) {
-            return ['success' => false, 'message' => '订单商品不能为空'];
+        if (!empty($errors)) {
+            return [
+                'success' => false,
+                'message' => implode('；', $errors),
+                'error_type' => 'VALIDATION_ERROR',
+                'errors' => $errors
+            ];
         }
 
+        if (!is_array($data['items']) || count($data['items']) === 0) {
+            return [
+                'success' => false,
+                'message' => '订单商品不能为空，请至少添加一个商品',
+                'error_type' => 'EMPTY_ITEMS'
+            ];
+        }
+
+        $skuList = [];
+        foreach ($data['items'] as $index => $item) {
+            if (empty($item['sku'])) {
+                return [
+                    'success' => false,
+                    'message' => "第" . ($index + 1) . "个商品的 SKU 不能为空",
+                    'error_type' => 'INVALID_SKU',
+                    'item_index' => $index
+                ];
+            }
+
+            $qty = isset($item['quantity']) ? (int)$item['quantity'] : 0;
+            if ($qty <= 0) {
+                return [
+                    'success' => false,
+                    'message' => "商品 SKU {$item['sku']} 的数量必须大于 0",
+                    'error_type' => 'INVALID_QUANTITY',
+                    'sku' => $item['sku']
+                ];
+            }
+
+            if ($qty > 999) {
+                return [
+                    'success' => false,
+                    'message' => "商品 SKU {$item['sku']} 的数量不能超过 999",
+                    'error_type' => 'QUANTITY_TOO_LARGE',
+                    'sku' => $item['sku']
+                ];
+            }
+
+            $skuList[] = trim($item['sku']);
+        }
+
+        $nameLen = mb_strlen(trim($data['customer_name']));
+        if ($nameLen < 2 || $nameLen > 50) {
+            return [
+                'success' => false,
+                'message' => '收件人姓名长度必须在 2-50 个字符之间',
+                'error_type' => 'INVALID_NAME'
+            ];
+        }
+
+        $phone = trim($data['customer_phone']);
+        if (!preg_match('/^[\d\s\-+()]{6,20}$/', $phone)) {
+            return [
+                'success' => false,
+                'message' => '联系电话格式不正确，请输入有效的电话号码',
+                'error_type' => 'INVALID_PHONE'
+            ];
+        }
+
+        if (!empty($data['customer_email'])) {
+            $email = trim($data['customer_email']);
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                return [
+                    'success' => false,
+                    'message' => '邮箱格式不正确',
+                    'error_type' => 'INVALID_EMAIL'
+                ];
+            }
+            $clean['customer_email'] = $email;
+        } else {
+            $clean['customer_email'] = null;
+        }
+
+        $country = trim($data['shipping_country']);
+        if (!preg_match('/^[A-Z]{2}$/', $country)) {
+            return [
+                'success' => false,
+                'message' => '国家代码格式不正确，请使用 2 位大写字母 ISO 代码',
+                'error_type' => 'INVALID_COUNTRY'
+            ];
+        }
+
+        $addressLen = mb_strlen(trim($data['shipping_address']));
+        if ($addressLen < 5) {
+            return [
+                'success' => false,
+                'message' => '详细地址长度不能少于 5 个字符',
+                'error_type' => 'INVALID_ADDRESS'
+            ];
+        }
+
+        $cleanItems = [];
+        foreach ($data['items'] as $item) {
+            $cleanItems[] = [
+                'sku' => trim($item['sku']),
+                'quantity' => (int)$item['quantity']
+            ];
+        }
+
+        $clean['items'] = $cleanItems;
+        $clean['customer_name'] = trim($data['customer_name']);
+        $clean['customer_phone'] = $phone;
+        $clean['shipping_country'] = $country;
+        $clean['shipping_state'] = !empty($data['shipping_state']) ? trim($data['shipping_state']) : null;
+        $clean['shipping_city'] = !empty($data['shipping_city']) ? trim($data['shipping_city']) : null;
+        $clean['shipping_address'] = trim($data['shipping_address']);
+        $clean['shipping_zip'] = !empty($data['shipping_zip']) ? trim($data['shipping_zip']) : null;
+        $clean['external_order_no'] = !empty($data['external_order_no']) ? trim($data['external_order_no']) : null;
+        $clean['remark'] = !empty($data['remark']) ? trim($data['remark']) : null;
+
+        return [
+            'success' => true,
+            'data' => $clean
+        ];
+    }
+
+    /**
+     * 创建订单：包含路由决策、库存锁定、订单持久化
+     */
+    public function createOrder($data) {
+        $validateResult = $this->validateOrderData($data);
+        if (!$validateResult['success']) {
+            return $validateResult;
+        }
+
+        $cleanData = $validateResult['data'];
+
         $routeResult = $this->router->route(
-            $data['items'],
-            $data['shipping_country'],
-            $data['shipping_state'] ?? null
+            $cleanData['items'],
+            $cleanData['shipping_country'],
+            $cleanData['shipping_state'] ?? null
         );
 
         if (!$routeResult['success']) {
-            return ['success' => false, 'message' => '仓库路由失败: ' . $routeResult['message']];
+            return [
+                'success' => false,
+                'message' => '仓库路由失败: ' . $routeResult['message'],
+                'error_type' => 'ROUTING_ERROR',
+                'details' => $routeResult
+            ];
+        }
+
+        if (!isset($routeResult['selected_warehouse']) || empty($routeResult['selected_warehouse'])) {
+            return [
+                'success' => false,
+                'message' => '未找到匹配的仓库，请检查商品库存或收货地址',
+                'error_type' => 'NO_WAREHOUSE_MATCHED'
+            ];
         }
 
         $warehouse = $routeResult['selected_warehouse'];
@@ -47,7 +202,7 @@ class OrderService {
             $totalWeight = 0;
             $orderItems = [];
 
-            foreach ($data['items'] as $item) {
+            foreach ($cleanData['items'] as $item) {
                 $product = $this->db->fetchOne(
                     "SELECT * FROM products WHERE sku = ? AND status = 1",
                     [$item['sku']]
@@ -56,10 +211,7 @@ class OrderService {
                     throw new Exception("商品 SKU {$item['sku']} 不存在或已下架");
                 }
 
-                $qty = (int)($item['quantity'] ?? 1);
-                if ($qty <= 0) {
-                    throw new Exception("商品 SKU {$item['sku']} 数量不合法");
-                }
+                $qty = $item['quantity'];
 
                 $this->lockInventory($warehouse['warehouse_id'], $product['id'], $qty);
 
@@ -81,24 +233,24 @@ class OrderService {
             $shippingCost = $warehouse['shipping_cost'];
             $orderId = $this->db->insert('orders', [
                 'order_no' => $orderNo,
-                'external_order_no' => $data['external_order_no'] ?? null,
+                'external_order_no' => $cleanData['external_order_no'],
                 'warehouse_id' => $warehouse['warehouse_id'],
                 'warehouse_code' => $warehouse['warehouse_code'],
-                'customer_name' => $data['customer_name'],
-                'customer_phone' => $data['customer_phone'],
-                'customer_email' => $data['customer_email'] ?? null,
-                'shipping_country' => $data['shipping_country'],
-                'shipping_state' => $data['shipping_state'] ?? null,
-                'shipping_city' => $data['shipping_city'] ?? null,
-                'shipping_address' => $data['shipping_address'],
-                'shipping_zip' => $data['shipping_zip'] ?? null,
+                'customer_name' => $cleanData['customer_name'],
+                'customer_phone' => $cleanData['customer_phone'],
+                'customer_email' => $cleanData['customer_email'],
+                'shipping_country' => $cleanData['shipping_country'],
+                'shipping_state' => $cleanData['shipping_state'],
+                'shipping_city' => $cleanData['shipping_city'],
+                'shipping_address' => $cleanData['shipping_address'],
+                'shipping_zip' => $cleanData['shipping_zip'],
                 'total_amount' => round($totalAmount, 2),
                 'shipping_cost' => $shippingCost,
                 'weight_total' => round($totalWeight, 2),
                 'order_status' => 1,
                 'fulfillment_status' => 0,
                 'estimated_delivery_date' => $warehouse['estimated_delivery_date'],
-                'remark' => $data['remark'] ?? null,
+                'remark' => $cleanData['remark'],
             ]);
 
             foreach ($orderItems as $item) {
@@ -120,7 +272,7 @@ class OrderService {
                 ['warehouse' => $warehouse]
             );
 
-            $this->pushToWarehouse($orderId, $orderNo, $warehouse, $orderItems, $data);
+            $this->pushToWarehouse($orderId, $orderNo, $warehouse, $orderItems, $cleanData);
 
             $this->db->commit();
 

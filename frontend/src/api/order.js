@@ -1,10 +1,15 @@
 import request from './request'
 
 export function createOrder(data) {
+  const silent = data._silent === true
+  const requestData = { ...data }
+  delete requestData._silent
+
   return request({
     url: '/orders',
     method: 'post',
-    data
+    data: requestData,
+    silentError: silent
   })
 }
 

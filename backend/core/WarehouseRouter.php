@@ -13,19 +13,70 @@ class WarehouseRouter {
      * 算法优先级：1.库存充足 2.配送区域匹配 3.运费最低 4.时效最快 5.优先级最高
      */
     public function route($items, $shippingCountry, $shippingState = null) {
-        if (empty($items) || empty($shippingCountry)) {
+        if (empty($items) || !is_array($items)) {
             return [
                 'success' => false,
-                'message' => '商品信息和收货国家不能为空',
+                'message' => '商品信息不能为空',
+                'error_type' => 'EMPTY_ITEMS',
+            ];
+        }
+
+        if (empty($shippingCountry)) {
+            return [
+                'success' => false,
+                'message' => '收货国家不能为空',
+                'error_type' => 'EMPTY_COUNTRY',
+            ];
+        }
+
+        $invalidSkus = [];
+        $invalidQtys = [];
+        foreach ($items as $idx => $item) {
+            if (empty($item['sku'])) {
+                $invalidSkus[] = ($idx + 1);
+            }
+            $qty = isset($item['quantity']) ? (int)$item['quantity'] : 0;
+            if ($qty <= 0) {
+                $invalidQtys[] = $item['sku'] ?? ('第' . ($idx + 1) . '个商品');
+            }
+        }
+
+        if (!empty($invalidSkus)) {
+            return [
+                'success' => false,
+                'message' => '第 ' . implode('、', $invalidSkus) . ' 个商品的 SKU 不能为空',
+                'error_type' => 'INVALID_SKU',
+                'item_indexes' => $invalidSkus,
+            ];
+        }
+
+        if (!empty($invalidQtys)) {
+            return [
+                'success' => false,
+                'message' => '商品 ' . implode('、', $invalidQtys) . ' 的数量必须大于 0',
+                'error_type' => 'INVALID_QUANTITY',
+                'skus' => $invalidQtys,
             ];
         }
 
         $skus = array_column($items, 'sku');
         $skuQuantities = [];
         foreach ($items as $item) {
-            $skuQuantities[$item['sku']] = isset($skuQuantities[$item['sku']])
-                ? $skuQuantities[$item['sku']] + ($item['quantity'] ?? 1)
-                : ($item['quantity'] ?? 1);
+            $sku = trim($item['sku']);
+            $skuQuantities[$sku] = isset($skuQuantities[$sku])
+                ? $skuQuantities[$sku] + (int)$item['quantity']
+                : (int)$item['quantity'];
+        }
+
+        $stockCheck = $this->checkAllWarehousesStock($skus, $skuQuantities);
+        if (!$stockCheck['all_available']) {
+            return [
+                'success' => false,
+                'message' => $stockCheck['message'],
+                'error_type' => 'INSUFFICIENT_STOCK',
+                'stock_details' => $stockCheck['details'],
+                'missing_skus' => $stockCheck['missing_skus'],
+            ];
         }
 
         $candidateWarehouses = $this->findWarehousesWithAllStock($skus, $skuQuantities);
@@ -33,7 +84,9 @@ class WarehouseRouter {
         if (empty($candidateWarehouses)) {
             return [
                 'success' => false,
-                'message' => '没有仓库同时拥有所有商品的充足库存',
+                'message' => '没有仓库同时拥有所有商品的充足库存，请尝试分拆订单或减少数量',
+                'error_type' => 'NO_WAREHOUSE_WITH_ALL_STOCK',
+                'stock_details' => $stockCheck['details'],
             ];
         }
 
@@ -42,9 +95,17 @@ class WarehouseRouter {
         $shippingZones = $this->getMatchingShippingZones($warehouseIds, $shippingCountry, $shippingState);
 
         if (empty($shippingZones)) {
+            $warehouseNames = [];
+            foreach ($candidateWarehouses as $w) {
+                $warehouseNames[] = $w['warehouse_name'] . '(' . $w['warehouse_code'] . ')';
+            }
             return [
                 'success' => false,
-                'message' => '候选仓库均不支持配送到该地区',
+                'message' => '候选仓库（' . implode('、', $warehouseNames) . '）均不支持配送到 ' . $shippingCountry . ($shippingState ? '/' . $shippingState : ''),
+                'error_type' => 'NO_SHIPPING_ZONE',
+                'shipping_country' => $shippingCountry,
+                'shipping_state' => $shippingState,
+                'candidate_warehouses' => $warehouseNames,
             ];
         }
 
@@ -89,7 +150,8 @@ class WarehouseRouter {
         if (empty($scored)) {
             return [
                 'success' => false,
-                'message' => '没有找到符合条件的仓库',
+                'message' => '没有找到符合条件的仓库，请联系客服',
+                'error_type' => 'NO_MATCHED_WAREHOUSE',
             ];
         }
 
@@ -102,6 +164,62 @@ class WarehouseRouter {
             'total_weight' => round($totalWeight, 2),
             'shipping_country' => $shippingCountry,
             'shipping_state' => $shippingState,
+        ];
+    }
+
+    /**
+     * 检查所有仓库的库存情况，返回详细的库存信息
+     */
+    private function checkAllWarehousesStock($skus, $skuQuantities) {
+        $placeholders = implode(',', array_fill(0, count($skus), '?'));
+
+        $sql = "SELECT wi.warehouse_id, wi.sku, wi.quantity, w.warehouse_code, w.warehouse_name
+                FROM warehouse_inventories wi
+                JOIN warehouses w ON wi.warehouse_id = w.id
+                WHERE wi.sku IN ($placeholders) AND w.status = 1";
+
+        $rows = $this->db->fetchAll($sql, $skus);
+
+        $details = [];
+        $missingSkus = [];
+
+        foreach ($skus as $sku) {
+            $requiredQty = $skuQuantities[$sku];
+            $totalStock = 0;
+            $availableIn = [];
+
+            foreach ($rows as $row) {
+                if ($row['sku'] === $sku) {
+                    $totalStock += (int)$row['quantity'];
+                    if ((int)$row['quantity'] >= $requiredQty) {
+                        $availableIn[] = $row['warehouse_name'] . '(' . $row['warehouse_code'] . '):' . $row['quantity'];
+                    }
+                }
+            }
+
+            $details[$sku] = [
+                'required' => $requiredQty,
+                'total_stock' => $totalStock,
+                'sufficient' => $totalStock >= $requiredQty,
+                'available_warehouses' => $availableIn,
+            ];
+
+            if ($totalStock < $requiredQty) {
+                $missingSkus[] = "{$sku}(需要{$requiredQty}，总库存{$totalStock})";
+            }
+        }
+
+        $allAvailable = empty($missingSkus);
+        $message = '';
+        if (!$allAvailable) {
+            $message = '以下商品库存不足：' . implode('；', $missingSkus);
+        }
+
+        return [
+            'all_available' => $allAvailable,
+            'message' => $message,
+            'details' => $details,
+            'missing_skus' => $missingSkus,
         ];
     }
 

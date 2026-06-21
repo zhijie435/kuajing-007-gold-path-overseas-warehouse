@@ -1,10 +1,11 @@
 import request from './request'
 
-export function calculateRoute(data) {
+export function calculateRoute(data, options = {}) {
   return request({
     url: '/warehouse/route',
     method: 'post',
-    data
+    data,
+    silentError: options.silentError !== false
   })
 }
 

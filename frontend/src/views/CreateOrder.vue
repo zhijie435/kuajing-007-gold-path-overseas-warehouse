@@ -221,11 +221,51 @@ const form = reactive({
   remark: ''
 })
 
+const validateItems = (rule, value, callback) => {
+  if (form.items.length === 0) {
+    callback(new Error('请至少添加一个商品'))
+  } else {
+    const invalidQty = form.items.some(i => !i.quantity || i.quantity <= 0)
+    if (invalidQty) {
+      callback(new Error('商品数量必须大于0'))
+    } else {
+      callback()
+    }
+  }
+}
+
+const validateEmail = (rule, value, callback) => {
+  if (value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    callback(new Error('请输入正确的邮箱格式'))
+  } else {
+    callback()
+  }
+}
+
+const validatePhone = (rule, value, callback) => {
+  if (!value) {
+    callback(new Error('请输入联系电话'))
+  } else if (!/^[\d\s\-+()]{6,20}$/.test(value)) {
+    callback(new Error('请输入正确的联系电话格式'))
+  } else {
+    callback()
+  }
+}
+
 const rules = {
-  customer_name: [{ required: true, message: '请输入收件人姓名', trigger: 'blur' }],
-  customer_phone: [{ required: true, message: '请输入联系电话', trigger: 'blur' }],
+  customer_name: [
+    { required: true, message: '请输入收件人姓名', trigger: 'blur' },
+    { min: 2, max: 50, message: '姓名长度在 2 到 50 个字符', trigger: 'blur' }
+  ],
+  customer_phone: [{ validator: validatePhone, trigger: 'blur' }],
+  customer_email: [{ validator: validateEmail, trigger: 'blur' }],
   shipping_country: [{ required: true, message: '请选择国家', trigger: 'change' }],
-  shipping_address: [{ required: true, message: '请输入详细地址', trigger: 'blur' }]
+  shipping_state: [{ required: false, message: '请输入州/省', trigger: 'blur' }],
+  shipping_address: [
+    { required: true, message: '请输入详细地址', trigger: 'blur' },
+    { min: 5, message: '地址长度不能少于 5 个字符', trigger: 'blur' }
+  ],
+  items: [{ validator: validateItems, trigger: 'change' }]
 }
 
 const loadProducts = async () => {
@@ -279,38 +319,129 @@ const calcRoute = async () => {
   }
 }
 
+const validateBeforeSubmit = () => {
+  if (form.items.length === 0) {
+    ElMessage.error('请至少添加一个商品')
+    return false
+  }
+
+  const invalidItems = form.items.filter(i => !i.sku || !i.quantity || i.quantity <= 0)
+  if (invalidItems.length > 0) {
+    ElMessage.error('商品信息不完整，请检查 SKU 和数量')
+    return false
+  }
+
+  const skuSet = new Set()
+  const duplicateSkus = []
+  form.items.forEach(i => {
+    if (skuSet.has(i.sku)) {
+      duplicateSkus.push(i.sku)
+    }
+    skuSet.add(i.sku)
+  })
+  if (duplicateSkus.length > 0) {
+    ElMessage.warning(`商品 ${duplicateSkus.join(', ')} 已存在，数量已合并`)
+  }
+
+  if (!form.shipping_country) {
+    ElMessage.error('请选择收货国家')
+    return false
+  }
+
+  if (!routeResult.value) {
+    ElMessage.warning('请先点击「计算最优仓库」进行路由预览')
+    return false
+  }
+
+  if (!routeResult.value.success) {
+    ElMessage.error('仓库路由失败：' + (routeResult.value.message || '无法匹配到合适的仓库，请检查商品和收货地址'))
+    return false
+  }
+
+  if (!routeResult.value.selected_warehouse) {
+    ElMessage.error('未获取到有效仓库信息，请重新计算路由')
+    return false
+  }
+
+  return true
+}
+
 const submitOrder = async () => {
   if (!formRef.value) return
-  await formRef.value.validate(async (valid) => {
-    if (!valid) return
-    if (form.items.length === 0) {
-      ElMessage.warning('请至少添加一个商品')
-      return
+
+  try {
+    await formRef.value.validate()
+  } catch (e) {
+    ElMessage.error('请检查表单填写是否完整')
+    return
+  }
+
+  if (!validateBeforeSubmit()) {
+    return
+  }
+
+  submitting.value = true
+  let submitSuccess = false
+
+  try {
+    const payload = {
+      items: form.items.map(x => ({ sku: x.sku, quantity: x.quantity })),
+      customer_name: form.customer_name.trim(),
+      customer_phone: form.customer_phone.trim(),
+      customer_email: form.customer_email ? form.customer_email.trim() : null,
+      external_order_no: form.external_order_no ? form.external_order_no.trim() : null,
+      shipping_country: form.shipping_country,
+      shipping_state: form.shipping_state ? form.shipping_state.trim() : null,
+      shipping_city: form.shipping_city ? form.shipping_city.trim() : null,
+      shipping_address: form.shipping_address.trim(),
+      shipping_zip: form.shipping_zip ? form.shipping_zip.trim() : null,
+      remark: form.remark ? form.remark.trim() : null
     }
-    submitting.value = true
-    try {
-      const payload = {
-        items: form.items.map(x => ({ sku: x.sku, quantity: x.quantity })),
-        customer_name: form.customer_name,
-        customer_phone: form.customer_phone,
-        customer_email: form.customer_email,
-        external_order_no: form.external_order_no,
-        shipping_country: form.shipping_country,
-        shipping_state: form.shipping_state,
-        shipping_city: form.shipping_city,
-        shipping_address: form.shipping_address,
-        shipping_zip: form.shipping_zip,
-        remark: form.remark
-      }
-      const res = await createOrder(payload)
-      ElMessage.success('订单创建成功！订单号：' + res.order_no)
+
+    ElMessage.info({
+      message: '正在提交订单，请稍候...',
+      duration: 0,
+      showClose: false
+    })
+
+    const res = await createOrder({
+      ...payload,
+      _silent: true
+    })
+
+    const orderNo = res?.order_no
+    if (orderNo) {
+      submitSuccess = true
+      ElMessage.closeAll()
+      ElMessage.success({
+        message: '订单创建成功！订单号：' + orderNo,
+        duration: 2000,
+        showClose: true
+      })
       orderStore.triggerRefresh()
-      setTimeout(() => router.push('/orders/' + res.order_no), 800)
-    } catch (e) {
-    } finally {
+
+      setTimeout(() => {
+        router.push('/orders/' + orderNo)
+      }, 1000)
+    } else {
+      throw new Error('订单创建失败，未获取到订单号')
+    }
+  } catch (e) {
+    console.error('创建订单失败:', e)
+    ElMessage.closeAll()
+    if (!submitSuccess) {
+      const errorMsg = e.message || '订单提交失败，请重试'
+      ElMessage.error({
+        message: errorMsg,
+        duration: 4000,
+        showClose: true
+      })
+    }
+  } finally {
+    if (!submitSuccess) {
       submitting.value = false
     }
-  })
+  }
 }
 
 const resetForm = () => {
