@@ -1,7 +1,7 @@
 <?php
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Role, X-Warehouse-Code, X-User-Id');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Callback-Token, X-Client-Key, X-API-Secret, X-Request-ID, X-Role, X-Warehouse-Code, X-User-Id');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -11,6 +11,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../core/Response.php';
 require_once __DIR__ . '/../core/Request.php';
 require_once __DIR__ . '/../core/WarehouseRouter.php';
+require_once __DIR__ . '/../core/PermissionService.php';
 require_once __DIR__ . '/../core/PermissionGuard.php';
 require_once __DIR__ . '/../core/AuditLogger.php';
 require_once __DIR__ . '/../core/AuditService.php';
@@ -27,29 +28,80 @@ $currentUserId = $guard->getCurrentUserId();
 try {
     $method = Request::getMethod();
     $uri = Request::getUri();
+    $config = require __DIR__ . '/../config/config.php';
+    $permissionService = new PermissionService();
+
+    $requireAuth = $config['security']['require_api_auth'] ?? false;
+
+    $authenticatedClient = null;
+    $authResult = null;
+    $clientKey = null;
+    $scopeWarehouseCode = null;
+
+    if ($requireAuth) {
+        $authResult = $permissionService->authenticateByHeaders();
+        $authenticatedClient = $authResult['client'] ?? null;
+        $clientKey = $authenticatedClient['client_key'] ?? null;
+
+        if (!$authResult['success']) {
+            $audit->log(AuditLogger::ACTION_PERMISSION_DENIED, AuditLogger::RESULT_FAILURE, [
+                'user_id' => $clientKey,
+                'role' => 'api_client',
+                'target_type' => 'auth',
+                'target_id' => 'api_authenticate',
+                'response_code' => 401,
+                'error_message' => $authResult['error_message'] ?? '认证失败',
+                'extra_data' => [
+                    'auth_method' => 'api_key',
+                    'checks' => $authResult['checks'] ?? null,
+                ],
+            ]);
+            Response::unauthorized('[权限拦截] ' . ($authResult['error_message'] ?? '认证失败'));
+        }
+
+        if (!empty($authenticatedClient['warehouse_code'])) {
+            $scopeWarehouseCode = $authenticatedClient['warehouse_code'];
+        }
+    }
+
+    if ($currentRole === 'warehouse_operator' && !empty($currentWarehouseCode)) {
+        $scopeWarehouseCode = $currentWarehouseCode;
+    }
 
     if ($method === 'POST' && strpos($uri, '/api/warehouse/route') !== false) {
         $permCheck = $guard->check('warehouse_route');
         if (!$permCheck['allowed']) {
             $audit->logPermissionDenied('warehouse_route', $permCheck['reason'] ?? 'unknown', [
-                'role' => $permCheck['role'],
+                'role' => $currentRole,
                 'user_id' => $currentUserId,
             ]);
             Response::unauthorized($permCheck['message']);
         }
 
+        if ($requireAuth && $authenticatedClient) {
+            $hasPermission = $permissionService->checkPermission($authenticatedClient, 'warehouse:route');
+            if (!$hasPermission) {
+                $audit->logPermissionDenied('warehouse:route', 'api_permission_missing', [
+                    'role' => 'api_client',
+                    'user_id' => $clientKey,
+                    'extra_data' => [
+                        'client_permissions' => $authenticatedClient['permissions_array'] ?? [],
+                    ],
+                ]);
+                Response::unauthorized('[权限拦截] 缺少 warehouse:route 权限');
+            }
+        }
+
         $input = Request::getInput();
         $router = new WarehouseRouter();
-
-        $scopeWarehouseCode = null;
-        if ($currentRole === 'warehouse_operator') {
-            $scopeWarehouseCode = $currentWarehouseCode;
-        }
-        $router->setPermissionContext($currentRole, $scopeWarehouseCode);
         $router->setAuditContext([
-            'client_key' => $currentUserId,
+            'client_key' => $clientKey,
+            'user_id' => $currentUserId,
+            'role' => $currentRole,
         ]);
-
+        if (!empty($scopeWarehouseCode)) {
+            $router->setPermissionContext($currentRole, $scopeWarehouseCode);
+        }
         $result = $router->route(
             $input['items'] ?? [],
             $input['shipping_country'] ?? '',
@@ -57,7 +109,7 @@ try {
         );
 
         $audit->log(AuditLogger::ACTION_WAREHOUSE_ROUTE,
-            $result['success'] ? AuditLogger::RESULT_SUCCESS : AuditLogger::RESULT_FAILURE,
+            !empty($result['success']) ? AuditLogger::RESULT_SUCCESS : AuditLogger::RESULT_FAILURE,
             [
                 'user_id' => $currentUserId,
                 'role' => $currentRole,
@@ -65,7 +117,7 @@ try {
                 'target_type' => 'warehouse_route',
                 'target_id' => $result['selected_warehouse']['warehouse_code'] ?? null,
                 'request_params' => $input,
-                'response_code' => $result['success'] ? 200 : 400,
+                'response_code' => !empty($result['success']) ? 200 : 400,
                 'error_message' => $result['message'] ?? null,
                 'extra_data' => [
                     'shipping_country' => $input['shipping_country'] ?? null,
@@ -97,14 +149,15 @@ try {
             Response::unauthorized($permCheck['message']);
         }
 
-        $router = new WarehouseRouter();
-        $status = isset($_GET['status']) ? (int)$_GET['status'] : 1;
-
-        $scopeWarehouseCode = null;
-        if ($currentRole === 'warehouse_operator') {
-            $scopeWarehouseCode = $currentWarehouseCode;
+        if ($requireAuth && $authenticatedClient) {
+            $hasPermission = $permissionService->checkPermission($authenticatedClient, 'warehouse:list');
+            if (!$hasPermission) {
+                Response::unauthorized('[权限拦截] 缺少 warehouse:list 权限');
+            }
         }
 
+        $router = new WarehouseRouter();
+        $status = isset($_GET['status']) ? (int)$_GET['status'] : 1;
         $list = $router->listWarehouses($status, $scopeWarehouseCode);
 
         $audit->log(AuditLogger::ACTION_WAREHOUSE_LIST, AuditLogger::RESULT_SUCCESS, [
@@ -118,7 +171,6 @@ try {
                 'returned_count' => count($list),
                 'permission_scoped' => !empty($scopeWarehouseCode),
                 'scope_warehouse_code' => $scopeWarehouseCode,
-                'consistency_note' => $scopeWarehouseCode ? '已按分配仓库筛选，列表与明细一致' : '全量返回',
             ],
         ]);
 
@@ -140,6 +192,13 @@ try {
             Response::unauthorized($permCheck['message']);
         }
 
+        if ($requireAuth && $authenticatedClient) {
+            $hasPermission = $permissionService->checkPermission($authenticatedClient, 'warehouse:inventory');
+            if (!$hasPermission) {
+                Response::unauthorized('[权限拦截] 缺少 warehouse:inventory 权限');
+            }
+        }
+
         $uriParts = explode('/', trim($uri, '/'));
         $warehouseId = null;
         foreach ($uriParts as $i => $part) {
@@ -156,44 +215,39 @@ try {
             Response::error('缺少仓库ID参数');
         }
 
-        $scopeWarehouseCode = null;
-        if ($currentRole === 'warehouse_operator') {
-            $scopeWarehouseCode = $currentWarehouseCode;
-        }
-
         $router = new WarehouseRouter();
         $sku = $_GET['sku'] ?? null;
-        $permissionCheck = [];
-        $list = $router->getWarehouseInventory($warehouseId, $sku, $scopeWarehouseCode, $permissionCheck);
+        $permCheckResult = [];
+        $list = $router->getWarehouseInventory($warehouseId, $sku, $scopeWarehouseCode, $permCheckResult);
 
-        if (!$permissionCheck['passed']) {
+        if (!$permCheckResult['passed']) {
             $audit->logWarehouseAccessDenied(
                 $scopeWarehouseCode,
-                $permissionCheck['actual_warehouse_code'] ?? ('warehouse_' . $warehouseId),
-                $permissionCheck['message'] ?? 'permission_check_failed',
+                $permCheckResult['actual_warehouse_code'] ?? ('warehouse_' . $warehouseId),
+                $permCheckResult['message'] ?? 'permission_check_failed',
                 [
                     'role' => $currentRole,
                     'target_type' => 'warehouse_inventory',
                     'user_id' => $currentUserId,
                     'extra_data' => [
                         'warehouse_id' => $warehouseId,
-                        'permission_check' => $permissionCheck,
+                        'permission_check' => $permCheckResult,
                     ],
                 ]
             );
-            Response::unauthorized($permissionCheck['message'] ?? '仓库访问权限验证失败');
+            Response::unauthorized('[权限拦截] ' . $permCheckResult['message']);
         }
 
         $audit->log(AuditLogger::ACTION_WAREHOUSE_INVENTORY, AuditLogger::RESULT_SUCCESS, [
             'user_id' => $currentUserId,
             'role' => $currentRole,
-            'warehouse_code' => $permissionCheck['actual_warehouse_code'] ?? $scopeWarehouseCode,
+            'warehouse_code' => $permCheckResult['actual_warehouse_code'] ?? $scopeWarehouseCode,
             'target_type' => 'warehouse_inventory',
             'target_id' => $warehouseId,
             'response_code' => 200,
             'extra_data' => [
                 'warehouse_id' => $warehouseId,
-                'warehouse_code' => $permissionCheck['actual_warehouse_code'],
+                'warehouse_code' => $permCheckResult['actual_warehouse_code'],
                 'sku_filter' => $sku,
                 'item_count' => count($list),
                 'permission_scoped' => !empty($scopeWarehouseCode),
@@ -205,10 +259,32 @@ try {
         Response::success([
             'list' => $list,
             'warehouse_id' => $warehouseId,
-            'warehouse_code' => $permissionCheck['actual_warehouse_code'],
+            'warehouse_code' => $permCheckResult['actual_warehouse_code'],
             'total' => count($list),
             'permission_scoped' => !empty($scopeWarehouseCode),
         ]);
+    }
+
+    if ($method === 'GET' && strpos($uri, '/api/warehouse/audits/route') !== false) {
+        if ($requireAuth && $authenticatedClient) {
+            $hasPermission = $permissionService->checkPermission($authenticatedClient, 'audit:view');
+            if (!$hasPermission) {
+                Response::unauthorized('[权限拦截] 缺少 audit:view 权限');
+            }
+        }
+        $result = $auditService->queryRouteAudits($_GET);
+        Response::success($result);
+    }
+
+    if ($method === 'GET' && strpos($uri, '/api/audits') !== false) {
+        if ($requireAuth && $authenticatedClient) {
+            $hasPermission = $permissionService->checkPermission($authenticatedClient, 'audit:view');
+            if (!$hasPermission) {
+                Response::unauthorized('[权限拦截] 缺少 audit:view 权限');
+            }
+        }
+        $result = $auditService->queryOperationAudits($_GET);
+        Response::success($result);
     }
 
     Response::notFound('接口不存在');

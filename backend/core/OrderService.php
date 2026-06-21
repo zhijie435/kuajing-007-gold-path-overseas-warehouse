@@ -290,7 +290,17 @@ class OrderService {
 
         } catch (Exception $e) {
             $this->db->rollBack();
-            return ['success' => false, 'message' => $e->getMessage()];
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+                'error_type' => 'ORDER_CREATE_FAILED',
+                'rollback' => true,
+                'retryable' => true,
+                'details' => [
+                    'exception' => get_class($e),
+                    'message' => $e->getMessage()
+                ]
+            ];
         }
     }
 

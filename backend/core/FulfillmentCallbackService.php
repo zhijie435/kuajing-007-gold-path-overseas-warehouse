@@ -338,16 +338,34 @@ class FulfillmentCallbackService {
             return ['success' => true, 'message' => '订单已发货，跳过重复回调', 'skipped' => true, 'error_type' => 'DUPLICATE_CALLBACK'];
         }
 
+        $callbackWarehouseCode = $data['warehouse_code'];
+        $warehouse = $this->db->fetchOne(
+            "SELECT id, warehouse_code FROM warehouses WHERE warehouse_code = ? LIMIT 1",
+            [$callbackWarehouseCode]
+        );
+        if (!$warehouse) {
+            return ['success' => false, 'message' => "仓库编码 [{$callbackWarehouseCode}] 不存在", 'error_type' => 'WAREHOUSE_NOT_FOUND'];
+        }
+
+        $effectiveWarehouseId = !empty($order['warehouse_id']) ? (int)$order['warehouse_id'] : (int)$warehouse['id'];
+        $warehouseIdSynced = empty($order['warehouse_id']) || (int)$order['warehouse_id'] !== (int)$warehouse['id'];
+
         $this->db->beginTransaction();
         try {
+            $updateData = [
+                'order_status' => 5,
+                'fulfillment_status' => 3,
+                'tracking_no' => $data['tracking_no'],
+                'shipping_carrier' => $data['shipping_carrier'],
+                'warehouse_code' => $callbackWarehouseCode,
+            ];
+            if ($warehouseIdSynced) {
+                $updateData['warehouse_id'] = $warehouse['id'];
+            }
+
             $this->db->update(
                 'orders',
-                [
-                    'order_status' => 5,
-                    'fulfillment_status' => 3,
-                    'tracking_no' => $data['tracking_no'],
-                    'shipping_carrier' => $data['shipping_carrier'],
-                ],
+                $updateData,
                 'order_no = ?',
                 [$data['order_no']]
             );
@@ -361,14 +379,17 @@ class FulfillmentCallbackService {
                     "UPDATE warehouse_inventories
                      SET reserved_quantity = reserved_quantity - ?
                      WHERE warehouse_id = ? AND product_id = ?",
-                    [$item['quantity'], $order['warehouse_id'], $item['product_id']]
+                    [$item['quantity'], $effectiveWarehouseId, $item['product_id']]
                 );
             }
 
             $this->addTrack($order['id'], $order['order_no'], 'SHIPPED', 'success',
-                $data['warehouse_code'],
+                $callbackWarehouseCode,
                 "商品已发货，物流商: {$data['shipping_carrier']}，运单号: {$data['tracking_no']}",
-                $data
+                array_merge($data, [
+                    'effective_warehouse_id' => $effectiveWarehouseId,
+                    'warehouse_id_synced' => $warehouseIdSynced,
+                ])
             );
 
             $this->db->commit();
@@ -380,6 +401,8 @@ class FulfillmentCallbackService {
                 'old_fulfillment_status' => $order['fulfillment_status'],
                 'new_fulfillment_status' => 3,
                 'items_count' => count($items),
+                'effective_warehouse_id' => $effectiveWarehouseId,
+                'warehouse_id_synced' => $warehouseIdSynced,
             ];
         } catch (Exception $e) {
             $this->db->rollBack();
