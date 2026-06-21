@@ -117,6 +117,71 @@ abstract class TestCase {
         }
     }
 
+    protected function assertGreaterThan($expected, $actual, string $message = ''): void {
+        if ($actual <= $expected) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected greater than $expected, got $actual");
+        }
+    }
+
+    protected function assertGreaterThanOrEqual($expected, $actual, string $message = ''): void {
+        if ($actual < $expected) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected greater than or equal to $expected, got $actual");
+        }
+    }
+
+    protected function assertLessThan($expected, $actual, string $message = ''): void {
+        if ($actual >= $expected) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected less than $expected, got $actual");
+        }
+    }
+
+    protected function assertIsArray($actual, string $message = ''): void {
+        if (!is_array($actual)) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected array, got " . gettype($actual));
+        }
+    }
+
+    protected function assertIsString($actual, string $message = ''): void {
+        if (!is_string($actual)) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected string, got " . gettype($actual));
+        }
+    }
+
+    protected function assertIsInt($actual, string $message = ''): void {
+        if (!is_int($actual)) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected int, got " . gettype($actual));
+        }
+    }
+
+    protected function assertMatchesRegularExpression(string $pattern, string $string, string $message = ''): void {
+        if (!preg_match($pattern, $string)) {
+            throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                "Expected to match pattern '$pattern', got '$string'");
+        }
+    }
+
+    protected function assertContains($needle, $haystack, string $message = ''): void {
+        if (is_array($haystack)) {
+            if (!in_array($needle, $haystack)) {
+                throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                    "Expected to find '$needle' in array");
+            }
+        } elseif (is_string($haystack)) {
+            if (strpos($haystack, $needle) === false) {
+                throw new Exception("Assertion failed: $message" . ($message ? ' - ' : '') . 
+                    "Expected to find '$needle' in string");
+            }
+        } else {
+            throw new Exception("Assertion failed: haystack must be array or string");
+        }
+    }
+
     protected function expectException(string $exceptionClass): void {
     }
 }

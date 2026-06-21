@@ -140,6 +140,113 @@
 - `fulfillment_tracks` - 履约追踪时间线
 - `warehouse_callback_logs` - 回调日志
 
+## 环境变量配置
+
+### 1. 仓库路由环境变量
+
+| 变量名 | 说明 | 默认值 | 示例 |
+|--------|------|--------|------|
+| `WAREHOUSE_ROUTING_STRATEGY` | 路由策略：`nearest`(最优综合评分)/`lowest_cost`(最低运费)/`fastest`(最快时效) | `nearest` | `nearest` |
+| `WAREHOUSE_DEFAULT_SHIPPING_DAYS` | 默认配送天数（无配送区域配置时使用） | `5` | `5` |
+| `WAREHOUSE_SCORE_COST_WEIGHT` | 运费评分权重（数值越大越优先考虑低运费） | `10` | `10` |
+| `WAREHOUSE_SCORE_DAYS_WEIGHT` | 时效评分权重（数值越大越优先考虑快时效） | `5` | `5` |
+| `WAREHOUSE_SCORE_PRIORITY_WEIGHT` | 仓库优先级评分权重 | `0.5` | `0.5` |
+
+**配置位置**: `backend/config/config.php`
+
+```php
+'warehouse' => [
+    'default_shipping_days' => getenv('WAREHOUSE_DEFAULT_SHIPPING_DAYS') ?: 5,
+    'routing_strategy' => getenv('WAREHOUSE_ROUTING_STRATEGY') ?: 'nearest',
+    'score_weights' => [
+        'cost' => getenv('WAREHOUSE_SCORE_COST_WEIGHT') ?: 10,
+        'days' => getenv('WAREHOUSE_SCORE_DAYS_WEIGHT') ?: 5,
+        'priority' => getenv('WAREHOUSE_SCORE_PRIORITY_WEIGHT') ?: 0.5,
+    ],
+],
+```
+
+### 2. 履约回传环境变量
+
+| 变量名 | 说明 | 默认值 | 示例 |
+|--------|------|--------|------|
+| `CALLBACK_TOKEN` | 履约回调 Token（WMS 回调时通过 Header `X-Callback-Token` 传递） | `wh_callback_token_2024` | `wh_callback_token_2024` |
+| `CALLBACK_IP_WHITELIST` | 回调 IP 白名单（逗号分隔，留空表示不限制） | `` | `192.168.1.0/24,10.0.0.1` |
+| `CALLBACK_RETRY_ENABLED` | 是否启用回调重试 | `false` | `true` |
+| `CALLBACK_RETRY_MAX_TIMES` | 最大重试次数 | `3` | `3` |
+| `CALLBACK_RETRY_INTERVAL` | 重试间隔（秒） | `60` | `60` |
+
+**配置位置**: `backend/config/config.php`
+
+```php
+'callback' => [
+    'token' => getenv('CALLBACK_TOKEN') ?: 'wh_callback_token_2024',
+    'ip_whitelist' => getenv('CALLBACK_IP_WHITELIST') ?: '',
+    'retry' => [
+        'enabled' => getenv('CALLBACK_RETRY_ENABLED') ?: false,
+        'max_times' => getenv('CALLBACK_RETRY_MAX_TIMES') ?: 3,
+        'interval' => getenv('CALLBACK_RETRY_INTERVAL') ?: 60,
+    ],
+],
+```
+
+### 3. 完整配置参考
+
+编辑 `backend/config/config.php`，完整配置如下：
+
+```php
+<?php
+return [
+    'db' => [
+        'host' => getenv('DB_HOST') ?: '127.0.0.1',
+        'port' => getenv('DB_PORT') ?: 3306,
+        'database' => getenv('DB_DATABASE') ?: 'overseas_warehouse',
+        'username' => getenv('DB_USERNAME') ?: 'root',
+        'password' => getenv('DB_PASSWORD') ?: '',
+        'charset' => 'utf8mb4',
+    ],
+    'app' => [
+        'name' => 'Overseas Warehouse Fulfillment System',
+        'timezone' => getenv('APP_TIMEZONE') ?: 'Asia/Shanghai',
+        'debug' => getenv('APP_DEBUG') ?: true,
+    ],
+    'warehouse' => [
+        'default_shipping_days' => getenv('WAREHOUSE_DEFAULT_SHIPPING_DAYS') ?: 5,
+        'routing_strategy' => getenv('WAREHOUSE_ROUTING_STRATEGY') ?: 'nearest',
+        'score_weights' => [
+            'cost' => getenv('WAREHOUSE_SCORE_COST_WEIGHT') ?: 10,
+            'days' => getenv('WAREHOUSE_SCORE_DAYS_WEIGHT') ?: 5,
+            'priority' => getenv('WAREHOUSE_SCORE_PRIORITY_WEIGHT') ?: 0.5,
+        ],
+    ],
+    'callback' => [
+        'token' => getenv('CALLBACK_TOKEN') ?: 'wh_callback_token_2024',
+        'ip_whitelist' => getenv('CALLBACK_IP_WHITELIST') ?: '',
+        'retry' => [
+            'enabled' => getenv('CALLBACK_RETRY_ENABLED') ?: false,
+            'max_times' => getenv('CALLBACK_RETRY_MAX_TIMES') ?: 3,
+            'interval' => getenv('CALLBACK_RETRY_INTERVAL') ?: 60,
+        ],
+    ],
+    'security' => [
+        'require_api_auth' => getenv('REQUIRE_API_AUTH') ?: false,
+        'permission' => [
+            'enable' => getenv('PERMISSION_ENABLE') ?: true,
+        ],
+        'audit' => [
+            'enable' => getenv('AUDIT_ENABLE') ?: true,
+            'log_request_body' => getenv('AUDIT_LOG_REQUEST') ?: true,
+            'log_response_body' => getenv('AUDIT_LOG_RESPONSE') ?: true,
+            'log_old_new_data' => getenv('AUDIT_LOG_OLD_NEW') ?: true,
+        ],
+        'ip' => [
+            'trust_x_forwarded_for' => getenv('TRUST_X_FORWARDED_FOR') ?: true,
+            'x_forwarded_for_index' => getenv('X_FORWARDED_FOR_INDEX') ?: 0,
+        ],
+    ],
+];
+```
+
 ## 快速启动
 
 ### 1. 初始化数据库
@@ -147,8 +254,20 @@
 mysql -u root -p < backend/sql/database.sql
 ```
 
-### 2. 配置数据库连接
-编辑 `backend/config/config.php`，修改数据库用户名密码。
+### 2. 配置环境变量（可选）
+```bash
+# 复制环境变量模板并修改
+cp backend/config/config.php backend/config/config.local.php
+
+# 设置关键环境变量
+export DB_HOST=127.0.0.1
+export DB_PORT=3306
+export DB_DATABASE=overseas_warehouse
+export DB_USERNAME=root
+export DB_PASSWORD=your_password
+export CALLBACK_TOKEN=your_production_token
+export WAREHOUSE_ROUTING_STRATEGY=nearest
+```
 
 ### 3. 启动 PHP 后端
 ```bash
@@ -164,6 +283,301 @@ npm run dev
 ```
 
 前端访问: http://localhost:5173
+
+## 验收命令
+
+### 1. 全量单元测试
+```bash
+# 运行所有单元测试
+cd backend
+php tests/run.php
+```
+
+**预期输出**:
+```
+========================================
+  海外仓一件代发系统 - 单元测试
+========================================
+
+✓ 通过 WarehouseRouterTest (17/17)
+✓ 通过 FulfillmentCallbackServiceTest (18/18)
+✓ 通过 OrderServiceTest (XX/XX)
+✓ 通过 StatusClosedLoopTest (XX/XX)
+
+========================================
+  测试总结
+========================================
+  总测试数: XX
+  通过: XX
+  失败: 0
+  通过率: 100.00%
+========================================
+```
+
+### 2. 仓库路由专项测试
+```bash
+# 单独运行仓库路由测试
+cd backend
+php -r "
+require_once 'tests/bootstrap.php';
+require_once 'tests/WarehouseRouterTest.php';
+\$test = new WarehouseRouterTest();
+\$test->setUp();
+\$result = \$test->runAll();
+echo '仓库路由测试结果: ' . (\$result['failed'] === 0 ? 'PASS' : 'FAIL') . PHP_EOL;
+echo '通过: ' . \$result['passed'] . '/' . (\$result['passed'] + \$result['failed']) . PHP_EOL;
+"
+```
+
+**验证点**:
+- ✓ 基本路由计算成功（返回最优仓库）
+- ✓ 多商品路由计算
+- ✓ 库存不足时返回错误
+- ✓ 配送区域不匹配时返回错误
+- ✓ 返回备选仓库列表
+- ✓ 运费计算正确
+- ✓ 预计送达日期格式正确（YYYY-MM-DD）
+- ✓ 权限范围控制（按仓库编码过滤）
+
+### 3. 履约回传专项测试
+```bash
+# 单独运行履约回调测试
+cd backend
+php -r "
+require_once 'tests/bootstrap.php';
+require_once 'tests/FulfillmentCallbackServiceTest.php';
+\$test = new FulfillmentCallbackServiceTest();
+\$test->setUp();
+\$result = \$test->runAll();
+echo '履约回传测试结果: ' . (\$result['failed'] === 0 ? 'PASS' : 'FAIL') . PHP_EOL;
+echo '通过: ' . \$result['passed'] . '/' . (\$result['passed'] + \$result['failed']) . PHP_EOL;
+"
+```
+
+**验证点**:
+- ✓ Token 校验正确
+- ✓ 7 类回调事件处理正常（接单/拣货/打包/发货/签收/异常/取消）
+- ✓ 重复回调幂等性
+- ✓ 必填字段校验
+- ✓ 状态流转正确
+- ✓ 生成履约追踪记录
+- ✓ 回调日志记录完整
+- ✓ 发货时扣减锁定库存
+
+### 4. 全流程闭环测试
+```bash
+# 运行端到端全流程测试
+cd backend
+php -r "
+require_once 'tests/bootstrap.php';
+require_once 'tests/StatusClosedLoopTest.php';
+\$test = new StatusClosedLoopTest();
+\$test->setUp();
+\$result = \$test->runAll();
+echo '全流程闭环测试结果: ' . (\$result['failed'] === 0 ? 'PASS' : 'FAIL') . PHP_EOL;
+echo '通过: ' . \$result['passed'] . '/' . (\$result['passed'] + \$result['failed']) . PHP_EOL;
+"
+```
+
+**验证点**:
+- ✓ 订单创建 → 路由计算 → 库存锁定
+- ✓ 仓库接单回调 → 状态更新为"仓库已接单"
+- ✓ 拣货开始回调 → 履约状态更新为"拣货中"
+- ✓ 打包开始回调 → 履约状态更新为"打包中"
+- ✓ 发货回调 → 订单状态更新为"已发货"，扣减锁定库存
+- ✓ 签收回调 → 订单状态更新为"已签收"
+- ✓ 异常回调 → 履约状态更新为"异常"
+- ✓ 发货前取消 → 库存返还，状态更新为"已取消"
+- ✓ 发货后取消 → 拒绝取消
+- ✓ 重复回调幂等性验证
+
+### 5. API 接口冒烟测试
+
+#### 仓库路由接口测试
+```bash
+# 测试仓库路由接口
+curl -X POST http://localhost:8000/api/warehouse/route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [
+        {"sku": "SKU001", "quantity": 2},
+        {"sku": "SKU002", "quantity": 1}
+    ],
+    "shipping_country": "US",
+    "shipping_state": "CA"
+  }'
+```
+
+**预期响应**:
+```json
+{
+  "success": true,
+  "selected_warehouse": {
+    "warehouse_code": "USCA",
+    "warehouse_name": "美国加州仓",
+    "shipping_cost": 12.99,
+    "estimated_delivery_date": "2024-06-25"
+  },
+  "alternatives": [...]
+}
+```
+
+#### 履约回调接口测试
+```bash
+# 测试订单创建
+curl -X POST http://localhost:8000/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [{"sku": "SKU001", "quantity": 1}],
+    "customer_name": "张三",
+    "customer_phone": "13800138000",
+    "shipping_country": "US",
+    "shipping_address": "123 Test Street",
+    "shipping_city": "Los Angeles",
+    "shipping_state": "CA",
+    "shipping_zip": "90001"
+  }'
+
+# 记录返回的 order_no，然后测试履约回调
+curl -X POST http://localhost:8000/api/fulfillment/callback \
+  -H "Content-Type: application/json" \
+  -H "X-Callback-Token: wh_callback_token_2024" \
+  -d '{
+    "callback_type": "ORDER_ACCEPT",
+    "order_no": "YOUR_ORDER_NO",
+    "warehouse_order_no": "WMS001",
+    "warehouse_code": "USCA",
+    "operate_time": "2024-06-22 10:00:00"
+  }'
+```
+
+### 6. 部署验收检查清单
+
+```bash
+# 1. 检查数据库连接
+php -r "
+require_once 'backend/config/config.php';
+\$config = require 'backend/config/config.php';
+try {
+    \$pdo = new PDO(
+        'mysql:host=' . \$config['db']['host'] . ';port=' . \$config['db']['port'] . ';dbname=' . \$config['db']['database'] . ';charset=' . \$config['db']['charset'],
+        \$config['db']['username'],
+        \$config['db']['password']
+    );
+    echo '✓ 数据库连接正常' . PHP_EOL;
+} catch (PDOException \$e) {
+    echo '✗ 数据库连接失败: ' . \$e->getMessage() . PHP_EOL;
+    exit(1);
+}
+"
+
+# 2. 检查关键数据表
+mysql -u root -p overseas_warehouse -e "
+SELECT 'warehouses' as table_name, COUNT(*) as count FROM warehouses
+UNION ALL
+SELECT 'products', COUNT(*) FROM products
+UNION ALL
+SELECT 'warehouse_inventories', COUNT(*) FROM warehouse_inventories
+UNION ALL
+SELECT 'warehouse_shipping_zones', COUNT(*) FROM warehouse_shipping_zones;
+"
+
+# 3. 检查环境变量配置
+echo "=== 环境变量检查 ==="
+echo "DB_HOST: ${DB_HOST:-127.0.0.1}"
+echo "DB_DATABASE: ${DB_DATABASE:-overseas_warehouse}"
+echo "CALLBACK_TOKEN: ${CALLBACK_TOKEN:-wh_callback_token_2024}"
+echo "WAREHOUSE_ROUTING_STRATEGY: ${WAREHOUSE_ROUTING_STRATEGY:-nearest}"
+echo "APP_DEBUG: ${APP_DEBUG:-true}"
+
+# 4. 检查 PHP 扩展
+php -m | grep -E "pdo_mysql|curl|json"
+```
+
+### 7. 一键验收脚本
+
+```bash
+# 保存为 backend/acceptance.sh
+#!/bin/bash
+
+echo "========================================"
+echo "  海外仓一件代发系统 - 部署验收"
+echo "========================================"
+
+PASS=0
+FAIL=0
+
+# 测试1: 数据库连接
+echo -n "[1/5] 检查数据库连接... "
+php -r "
+\$config = require 'config/config.php';
+try {
+    \$pdo = new PDO('mysql:host='.\$config['db']['host'].';dbname='.\$config['db']['database'], \$config['db']['username'], \$config['db']['password']);
+    echo '✓ PASS';
+    exit(0);
+} catch (Exception \$e) {
+    echo '✗ FAIL: '.\$e->getMessage();
+    exit(1);
+}
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+echo ""
+
+# 测试2: 单元测试
+echo -n "[2/5] 运行单元测试... "
+php tests/run.php > /tmp/test_result.txt 2>&1
+if [ $? -eq 0 ]; then
+    echo "✓ PASS"
+    PASS=$((PASS+1))
+else
+    echo "✗ FAIL"
+    cat /tmp/test_result.txt
+    FAIL=$((FAIL+1))
+fi
+
+# 测试3: 仓库路由功能
+echo -n "[3/5] 测试仓库路由... "
+php -r "
+require_once 'core/WarehouseRouter.php';
+\$router = new WarehouseRouter();
+\$result = \$router->route([['sku'=>'SKU001','quantity'=>1]], 'US');
+echo \$result['success'] ? '✓ PASS' : '✗ FAIL: '.\$result['message'];
+exit(\$result['success'] ? 0 : 1);
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+echo ""
+
+# 测试4: 履约回调Token校验
+echo -n "[4/5] 测试履约回调Token... "
+php -r "
+require_once 'core/FulfillmentCallbackService.php';
+\$service = new FulfillmentCallbackService();
+\$config = require 'config/config.php';
+echo \$service->validateToken(\$config['callback']['token']) ? '✓ PASS' : '✗ FAIL';
+exit(\$service->validateToken(\$config['callback']['token']) ? 0 : 1);
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+echo ""
+
+# 测试5: 数据表初始化
+echo -n "[5/5] 检查测试数据... "
+php -r "
+\$config = require 'config/config.php';
+\$pdo = new PDO('mysql:host='.\$config['db']['host'].';dbname='.\$config['db']['database'], \$config['db']['username'], \$config['db']['password']);
+\$count = \$pdo->query('SELECT COUNT(*) FROM warehouses')->fetchColumn();
+echo \$count >= 4 ? '✓ PASS ('.$count.' warehouses)' : '✗ FAIL';
+exit(\$count >= 4 ? 0 : 1);
+" && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+echo ""
+
+echo "========================================"
+echo "  验收结果: $PASS 通过, $FAIL 失败"
+echo "========================================"
+exit $FAIL
+```
+
+**执行验收**:
+```bash
+chmod +x backend/acceptance.sh
+cd backend && ./acceptance.sh
+```
 
 ## 订单状态流转
 
