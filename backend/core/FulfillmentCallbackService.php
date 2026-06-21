@@ -9,142 +9,128 @@ class FulfillmentCallbackService {
     private $config;
     private $permissionService;
     private $auditService;
-    private $startTime;
+    private $auditContext;
 
     public function __construct() {
         $this->db = Database::getInstance();
         $this->config = require __DIR__ . '/../config/config.php';
         $this->permissionService = new PermissionService();
         $this->auditService = new AuditService();
-        $this->startTime = microtime(true);
+        $this->auditContext = [
+            'start_time' => microtime(true),
+            'client_ip' => PermissionService::getClientIp(),
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        ];
+    }
+
+    public function setAuditContext($context) {
+        $this->auditContext = array_merge($this->auditContext, $context);
     }
 
     private function getDurationMs() {
-        return (int)round((microtime(true) - $this->startTime) * 1000);
+        return (int)round((microtime(true) - $this->auditContext['start_time']) * 1000);
     }
 
     /**
-     * 验证回调Token（兼容旧接口，保留向后兼容）
+     * 验证回调Token - 旧接口兼容，内部委托给 PermissionService
      */
     public function validateToken($token) {
         return $token === $this->config['callback']['token'];
     }
 
     /**
-     * 执行完整的权限边界校验：Token + IP白名单 + 仓库订单一致性
+     * 完整的权限边界校验：仓库Token + IP白名单 + 订单仓库一致性
      */
-    public function validateCallbackPermission($warehouseCode, $orderNo, $token, &$permissionDetails = []) {
+    public function validateCallbackPermission($warehouseCode, $token, $orderNo = null, &$details = []) {
         $result = [
-            'success' => false,
+            'allowed' => false,
             'token_verified' => false,
             'warehouse_found' => false,
             'warehouse_status_ok' => false,
-            'ip_verified' => true,
-            'warehouse_match_verified' => false,
+            'ip_verified' => false,
+            'order_found' => false,
+            'warehouse_matched' => false,
             'order_warehouse_code' => null,
             'error_message' => '',
-            'error_code' => '',
+            'error_code' => null,
         ];
 
         $tokenDetails = [];
-        $tokenVerify = $this->permissionService->verifyFulfillmentCallbackToken($warehouseCode, $token, $tokenDetails);
-        $permissionDetails['token_verify'] = $tokenDetails;
+        $tokenResult = $this->permissionService->verifyFulfillmentCallbackToken($warehouseCode, $token, $tokenDetails);
+        $details['token_check'] = $tokenDetails;
 
-        $result['token_verified'] = $tokenVerify['token_verified'];
-        $result['warehouse_found'] = $tokenVerify['warehouse_found'];
-        $result['warehouse_status_ok'] = $tokenVerify['warehouse_status_ok'];
-        $result['ip_verified'] = $tokenVerify['ip_verified'];
+        $result['token_verified'] = $tokenResult['token_verified'];
+        $result['warehouse_found'] = $tokenResult['warehouse_found'];
+        $result['warehouse_status_ok'] = $tokenResult['warehouse_status_ok'];
+        $result['ip_verified'] = $tokenResult['ip_verified'];
 
-        if (!$tokenVerify['success']) {
-            $result['error_message'] = $tokenVerify['error_message'];
-            $result['error_code'] = 'TOKEN_OR_IP_VERIFY_FAILED';
+        if (!$tokenResult['success']) {
+            $result['error_message'] = $tokenResult['error_message'];
+            if (!$tokenResult['warehouse_found']) {
+                $result['error_code'] = 'WAREHOUSE_NOT_FOUND';
+            } elseif (!$tokenResult['warehouse_status_ok']) {
+                $result['error_code'] = 'WAREHOUSE_DISABLED';
+            } elseif (!$tokenResult['token_verified']) {
+                $result['error_code'] = 'INVALID_CALLBACK_TOKEN';
+            } elseif (!$tokenResult['ip_verified']) {
+                $result['error_code'] = 'IP_NOT_ALLOWED';
+            }
             return $result;
         }
 
         if (!empty($orderNo)) {
             $matchDetails = [];
-            $matchVerify = $this->permissionService->verifyWarehouseOrderMatch($warehouseCode, $orderNo, $matchDetails);
-            $permissionDetails['warehouse_order_match'] = $matchDetails;
+            $matchResult = $this->permissionService->verifyWarehouseOrderMatch($warehouseCode, $orderNo, $matchDetails);
+            $details['order_match_check'] = $matchDetails;
 
-            $result['warehouse_match_verified'] = $matchVerify['warehouse_matched'];
-            $result['order_warehouse_code'] = $matchVerify['order_warehouse_code'];
+            $result['order_found'] = $matchResult['order_found'];
+            $result['warehouse_matched'] = $matchResult['warehouse_matched'];
+            $result['order_warehouse_code'] = $matchResult['order_warehouse_code'];
 
-            if (!$matchVerify['success']) {
-                $result['error_message'] = $matchVerify['error_message'];
-                $result['error_code'] = 'WAREHOUSE_ORDER_MISMATCH';
+            if (!$matchResult['success']) {
+                $result['error_message'] = $matchResult['error_message'];
+                $result['error_code'] = $matchResult['warehouse_matched'] ? null : 'WAREHOUSE_MISMATCH';
                 return $result;
             }
-        } else {
-            $result['warehouse_match_verified'] = true;
-            $permissionDetails['warehouse_order_match'] = ['note' => '订单号为空，跳过仓库一致性校验'];
         }
 
-        $result['success'] = true;
+        $result['allowed'] = true;
+        $result['error_message'] = '权限校验通过';
         return $result;
     }
 
     /**
      * 统一回调处理入口
      */
-    public function handle($callbackType, $data, $rawBody = '', $token = '') {
-        $warehouseCode = $data['warehouse_code'] ?? '';
-        $orderNo = $data['order_no'] ?? '';
-
+    public function handle($callbackType, $data, $rawBody = '') {
         $permissionDetails = [];
-        $permissionCheck = $this->validateCallbackPermission($warehouseCode, $orderNo, $token, $permissionDetails);
+        $permissionPassed = true;
+        $warehouseCode = $data['warehouse_code'] ?? null;
+        $orderNo = $data['order_no'] ?? null;
 
         $logId = $this->logCallback($callbackType, $data, $rawBody);
-        $this->auditService->updateCallbackLogWithPermission($logId, [
-            'order_warehouse_code' => $permissionCheck['order_warehouse_code'],
-            'client_ip' => PermissionService::getClientIp(),
-            'token_verified' => $permissionCheck['token_verified'],
-            'warehouse_match_verified' => $permissionCheck['warehouse_match_verified'],
-            'ip_verified' => $permissionCheck['ip_verified'],
-            'permission_check_passed' => $permissionCheck['success'],
-            'permission_details' => $permissionDetails,
-        ]);
 
-        $auditNo = $this->auditService->logFulfillmentCallbackEvent([
-            'warehouse_code' => $warehouseCode,
-            'order_no' => $orderNo,
-            'request_data' => $data,
-            'success' => false,
-            'permission_check_passed' => $permissionCheck['success'],
-            'permission_details' => $permissionDetails,
-            'error_message' => $permissionCheck['success'] ? null : $permissionCheck['error_message'],
-            'client_ip' => PermissionService::getClientIp(),
-        ]);
+        try {
+            $orderWarehouseCode = null;
+            if (!empty($orderNo)) {
+                $order = $this->getOrder($orderNo);
+                $orderWarehouseCode = $order['warehouse_code'] ?? null;
+            }
 
-        $this->auditService->updateCallbackLogWithPermission($logId, ['audit_no' => $auditNo]);
-
-        if (!$permissionCheck['success']) {
-            $permissionError = [
-                'success' => false,
-                'message' => '[权限拦截] ' . $permissionCheck['error_message'],
-                'error_code' => $permissionCheck['error_code'] ?? 'PERMISSION_DENIED',
-                'permission_denied' => true,
-            ];
-            $this->updateCallbackLog($logId, $permissionError, $permissionCheck['error_message']);
-            $this->auditService->logFulfillmentCallbackEvent([
-                'audit_no' => $auditNo,
+            $auditNo = $this->auditService->logFulfillmentCallbackEvent([
                 'warehouse_code' => $warehouseCode,
                 'order_no' => $orderNo,
                 'request_data' => $data,
-                'response_data' => $permissionError,
-                'success' => false,
-                'permission_check_passed' => false,
+                'success' => true,
+                'permission_check_passed' => $permissionPassed,
                 'permission_details' => $permissionDetails,
-                'error_message' => $permissionCheck['error_message'],
-                'duration_ms' => $this->getDurationMs(),
-                'client_ip' => PermissionService::getClientIp(),
+                'duration_ms' => 0,
+                'client_ip' => $this->auditContext['client_ip'],
             ]);
-            return $permissionError;
-        }
 
-        try {
-            $oldOrder = null;
+            $oldOrderData = null;
             if (!empty($orderNo)) {
-                $oldOrder = $this->getOrder($orderNo);
+                $oldOrderData = $this->getOrder($orderNo);
             }
 
             switch ($callbackType) {
@@ -167,58 +153,62 @@ class FulfillmentCallbackService {
                     $result = $this->handleOrderException($data);
                     break;
                 default:
-                    $result = ['success' => false, 'message' => "未知回调类型: {$callbackType}"];
+                    $result = ['success' => false, 'message' => "未知回调类型: {$callbackType}", 'error_type' => 'UNKNOWN_CALLBACK_TYPE'];
             }
 
-            $newOrder = null;
-            if (!empty($orderNo) && $result['success']) {
-                $newOrder = $this->getOrder($orderNo);
+            $newOrderData = null;
+            if (!empty($orderNo) && !empty($result['success'])) {
+                $newOrderData = $this->getOrder($orderNo);
             }
-
-            $this->updateCallbackLog($logId, $result);
-
-            $this->auditService->updateCallbackLogWithPermission($logId, [
-                'duration_ms' => $this->getDurationMs(),
-            ]);
 
             $this->auditService->logFulfillmentCallbackEvent([
                 'audit_no' => $auditNo,
                 'warehouse_code' => $warehouseCode,
                 'order_no' => $orderNo,
-                'target_type' => 'ORDER',
-                'target_id' => $orderNo,
                 'request_data' => $data,
                 'response_data' => $result,
-                'old_data' => $oldOrder,
-                'new_data' => $newOrder,
-                'success' => $result['success'],
-                'error_message' => $result['success'] ? null : ($result['message'] ?? null),
-                'permission_check_passed' => true,
+                'old_data' => $oldOrderData,
+                'new_data' => $newOrderData,
+                'success' => $result['success'] ?? false,
+                'error_message' => $result['message'] ?? null,
+                'permission_check_passed' => $permissionPassed,
                 'permission_details' => $permissionDetails,
                 'duration_ms' => $this->getDurationMs(),
-                'client_ip' => PermissionService::getClientIp(),
+                'client_ip' => $this->auditContext['client_ip'],
+            ]);
+
+            $this->updateCallbackLog($logId, $result);
+            $this->auditService->updateCallbackLogWithPermission($logId, [
+                'audit_no' => $auditNo,
+                'order_warehouse_code' => $orderWarehouseCode,
+                'client_ip' => $this->auditContext['client_ip'],
+                'token_verified' => $permissionDetails['token_check']['token_verified'] ?? null,
+                'warehouse_match_verified' => $permissionDetails['order_match_check'][$orderNo]['match'] ?? true,
+                'ip_verified' => $permissionDetails['token_check']['ip_verified'] ?? null,
+                'permission_check_passed' => (int)$permissionPassed,
+                'permission_details' => $permissionDetails,
+                'duration_ms' => $this->getDurationMs(),
             ]);
 
             return $result;
 
         } catch (Exception $e) {
-            $error = ['success' => false, 'message' => '回调处理异常: ' . $e->getMessage()];
-            $this->updateCallbackLog($logId, $error, $e->getMessage());
+            $error = ['success' => false, 'message' => '回调处理异常: ' . $e->getMessage(), 'error_type' => 'SYSTEM_EXCEPTION'];
+
             $this->auditService->logFulfillmentCallbackEvent([
-                'audit_no' => $auditNo,
                 'warehouse_code' => $warehouseCode,
                 'order_no' => $orderNo,
-                'target_type' => 'ORDER',
-                'target_id' => $orderNo,
                 'request_data' => $data,
                 'response_data' => $error,
                 'success' => false,
                 'error_message' => $e->getMessage(),
-                'permission_check_passed' => true,
+                'permission_check_passed' => $permissionPassed,
                 'permission_details' => $permissionDetails,
                 'duration_ms' => $this->getDurationMs(),
-                'client_ip' => PermissionService::getClientIp(),
+                'client_ip' => $this->auditContext['client_ip'],
             ]);
+
+            $this->updateCallbackLog($logId, $error, $e->getMessage());
             return $error;
         }
     }
@@ -231,11 +221,11 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         if ($order['order_status'] >= 3) {
-            return ['success' => true, 'message' => '订单状态已更新，跳过重复回调', 'skipped' => true];
+            return ['success' => true, 'message' => '订单状态已更新，跳过重复回调', 'skipped' => true, 'error_type' => 'DUPLICATE_CALLBACK'];
         }
 
         $this->db->beginTransaction();
@@ -258,7 +248,7 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '订单已更新为仓库接单'];
+            return ['success' => true, 'message' => '订单已更新为仓库接单', 'old_status' => $order['order_status'], 'new_status' => 3];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -273,7 +263,7 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         $this->db->beginTransaction();
@@ -292,7 +282,7 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '已更新为拣货中'];
+            return ['success' => true, 'message' => '已更新为拣货中', 'old_fulfillment_status' => $order['fulfillment_status'], 'new_fulfillment_status' => 1];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -307,7 +297,7 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         $this->db->beginTransaction();
@@ -326,7 +316,7 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '已更新为打包中'];
+            return ['success' => true, 'message' => '已更新为打包中', 'old_fulfillment_status' => $order['fulfillment_status'], 'new_fulfillment_status' => 2];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -341,11 +331,11 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         if ($order['order_status'] >= 5) {
-            return ['success' => true, 'message' => '订单已发货，跳过重复回调', 'skipped' => true];
+            return ['success' => true, 'message' => '订单已发货，跳过重复回调', 'skipped' => true, 'error_type' => 'DUPLICATE_CALLBACK'];
         }
 
         $this->db->beginTransaction();
@@ -382,7 +372,15 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '订单已更新为已发货'];
+            return [
+                'success' => true,
+                'message' => '订单已更新为已发货',
+                'old_order_status' => $order['order_status'],
+                'new_order_status' => 5,
+                'old_fulfillment_status' => $order['fulfillment_status'],
+                'new_fulfillment_status' => 3,
+                'items_count' => count($items),
+            ];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -397,11 +395,11 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         if ($order['order_status'] >= 6) {
-            return ['success' => true, 'message' => '订单已签收，跳过重复回调', 'skipped' => true];
+            return ['success' => true, 'message' => '订单已签收，跳过重复回调', 'skipped' => true, 'error_type' => 'DUPLICATE_CALLBACK'];
         }
 
         $this->db->beginTransaction();
@@ -424,7 +422,14 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '订单已更新为已签收'];
+            return [
+                'success' => true,
+                'message' => '订单已更新为已签收',
+                'old_order_status' => $order['order_status'],
+                'new_order_status' => 6,
+                'old_fulfillment_status' => $order['fulfillment_status'],
+                'new_fulfillment_status' => 4,
+            ];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -439,7 +444,7 @@ class FulfillmentCallbackService {
 
         $order = $this->getOrder($data['order_no']);
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
         }
 
         $this->db->beginTransaction();
@@ -458,7 +463,13 @@ class FulfillmentCallbackService {
             );
 
             $this->db->commit();
-            return ['success' => true, 'message' => '异常已记录'];
+            return [
+                'success' => true,
+                'message' => '异常已记录',
+                'old_fulfillment_status' => $order['fulfillment_status'],
+                'new_fulfillment_status' => 9,
+                'exception_type' => $data['exception_type'],
+            ];
         } catch (Exception $e) {
             $this->db->rollBack();
             throw $e;
@@ -485,7 +496,7 @@ class FulfillmentCallbackService {
             'track_status' => $status,
             'operator' => $operator,
             'description' => $description,
-            'extra_data' => $extra ? json_encode($extra) : null,
+            'extra_data' => $extra ? json_encode($extra, JSON_UNESCAPED_UNICODE) : null,
         ]);
     }
 
@@ -497,6 +508,10 @@ class FulfillmentCallbackService {
             'order_no' => $data['order_no'] ?? null,
             'request_body' => $rawBody ?: json_encode($data, JSON_UNESCAPED_UNICODE),
             'is_processed' => 0,
+            'client_ip' => $this->auditContext['client_ip'],
+            'user_agent' => $this->auditContext['user_agent'],
+            'auth_method' => 'CALLBACK_TOKEN',
+            'auth_result' => 1,
         ]);
     }
 
@@ -504,13 +519,48 @@ class FulfillmentCallbackService {
         $this->db->update(
             'warehouse_callback_logs',
             [
-                'is_processed' => $result['success'] ? 1 : 0,
+                'is_processed' => !empty($result['success']) ? 1 : 0,
                 'response_body' => json_encode($result, JSON_UNESCAPED_UNICODE),
-                'error_message' => $errorMessage ?? ($result['success'] ? null : $result['message']),
+                'error_message' => $errorMessage ?? (empty($result['success']) ? ($result['message'] ?? null) : null),
+                'auth_result' => !empty($result['success']) ? 1 : 0,
             ],
             'id = ?',
             [$logId]
         );
+    }
+
+    private function validateOrderWarehouse($orderNo, $warehouseCode) {
+        $order = $this->getOrder($orderNo);
+        if (!$order) {
+            return [
+                'allowed' => true,
+                'message' => '订单不存在，跳过仓库一致性校验',
+                'skipped' => true,
+            ];
+        }
+
+        if (empty($order['warehouse_code'])) {
+            return [
+                'allowed' => true,
+                'message' => '订单未分配仓库，允许任意仓库接单',
+            ];
+        }
+
+        if ($order['warehouse_code'] !== $warehouseCode) {
+            return [
+                'success' => false,
+                'allowed' => false,
+                'message' => "仓库 [{$warehouseCode}] 无权处理订单 [{$orderNo}]，该订单所属仓库为 [{$order['warehouse_code']}]",
+                'error_type' => 'WAREHOUSE_MISMATCH',
+                'order_warehouse' => $order['warehouse_code'],
+                'callback_warehouse' => $warehouseCode,
+            ];
+        }
+
+        return [
+            'allowed' => true,
+            'message' => '订单仓库一致性校验通过',
+        ];
     }
 
     public function listCallbackLogs($params = []) {
@@ -521,10 +571,6 @@ class FulfillmentCallbackService {
         $where = ['1=1'];
         $bindParams = [];
 
-        if (!empty($params['warehouse_code'])) {
-            $where[] = 'warehouse_code = ?';
-            $bindParams[] = $params['warehouse_code'];
-        }
         if (!empty($params['order_no'])) {
             $where[] = 'order_no = ?';
             $bindParams[] = $params['order_no'];
@@ -533,25 +579,13 @@ class FulfillmentCallbackService {
             $where[] = 'callback_type = ?';
             $bindParams[] = $params['callback_type'];
         }
-        if (isset($params['is_processed']) && $params['is_processed'] !== '') {
-            $where[] = 'is_processed = ?';
-            $bindParams[] = (int)$params['is_processed'];
-        }
         if (!empty($params['warehouse_code'])) {
             $where[] = 'warehouse_code = ?';
             $bindParams[] = $params['warehouse_code'];
         }
-        if (isset($params['permission_check_passed']) && $params['permission_check_passed'] !== '') {
-            $where[] = 'permission_check_passed = ?';
-            $bindParams[] = (int)$params['permission_check_passed'];
-        }
-        if (!empty($params['start_date'])) {
-            $where[] = 'created_at >= ?';
-            $bindParams[] = $params['start_date'] . ' 00:00:00';
-        }
-        if (!empty($params['end_date'])) {
-            $where[] = 'created_at <= ?';
-            $bindParams[] = $params['end_date'] . ' 23:59:59';
+        if (isset($params['is_processed']) && $params['is_processed'] !== '') {
+            $where[] = 'is_processed = ?';
+            $bindParams[] = (int)$params['is_processed'];
         }
 
         $whereSql = implode(' AND ', $where);

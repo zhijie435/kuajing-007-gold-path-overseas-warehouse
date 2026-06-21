@@ -154,13 +154,53 @@ CREATE TABLE IF NOT EXISTS `warehouse_callback_logs` (
     `user_agent` VARCHAR(500) DEFAULT NULL COMMENT '回调请求User Agent',
     `auth_method` VARCHAR(32) DEFAULT NULL COMMENT '认证方式: TOKEN, SIGNATURE, NONE',
     `auth_result` TINYINT DEFAULT 1 COMMENT '认证结果 0-失败 1-成功',
+    `order_warehouse_code` VARCHAR(32) DEFAULT NULL COMMENT '订单所属仓库编码',
+    `token_verified` TINYINT DEFAULT 0 COMMENT 'Token验证结果 0-失败 1-成功',
+    `warehouse_match_verified` TINYINT DEFAULT 0 COMMENT '仓库一致性验证结果 0-失败 1-成功',
+    `ip_verified` TINYINT DEFAULT 1 COMMENT 'IP白名单验证结果 0-失败 1-成功',
+    `permission_check_passed` TINYINT DEFAULT 0 COMMENT '权限校验是否通过 0-否 1-是',
+    `permission_details` JSON DEFAULT NULL COMMENT '权限校验详情',
+    `audit_no` VARCHAR(64) DEFAULT NULL COMMENT '审计追踪编号',
+    `duration_ms` INT DEFAULT 0 COMMENT '处理耗时(毫秒)',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY `idx_order_no` (`order_no`),
     KEY `idx_warehouse_order` (`warehouse_order_no`),
+    KEY `idx_warehouse_code` (`warehouse_code`),
     KEY `idx_created_at` (`created_at`),
     KEY `idx_client_ip` (`client_ip`),
-    KEY `idx_auth_result` (`auth_result`)
+    KEY `idx_auth_result` (`auth_result`),
+    KEY `idx_permission_check` (`permission_check_passed`),
+    KEY `idx_audit_no` (`audit_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库回调日志表';
+
+-- 履约回调审计日志表
+CREATE TABLE IF NOT EXISTS `fulfillment_callback_audit_logs` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `trace_id` VARCHAR(64) DEFAULT NULL COMMENT '追踪ID',
+    `audit_no` VARCHAR(64) NOT NULL COMMENT '审计编号',
+    `action` VARCHAR(64) NOT NULL DEFAULT 'fulfillment_callback' COMMENT '操作类型',
+    `result` VARCHAR(16) NOT NULL COMMENT '结果: success, failure',
+    `warehouse_code` VARCHAR(32) DEFAULT NULL COMMENT '仓库编码',
+    `order_no` VARCHAR(32) DEFAULT NULL COMMENT '订单号',
+    `target_type` VARCHAR(32) DEFAULT 'ORDER' COMMENT '目标类型',
+    `target_id` VARCHAR(64) DEFAULT NULL COMMENT '目标ID',
+    `client_ip` VARCHAR(45) DEFAULT NULL COMMENT '客户端IP',
+    `request_data` JSON DEFAULT NULL COMMENT '请求数据',
+    `response_data` JSON DEFAULT NULL COMMENT '响应数据',
+    `old_data` JSON DEFAULT NULL COMMENT '变更前数据',
+    `new_data` JSON DEFAULT NULL COMMENT '变更后数据',
+    `permission_check_passed` TINYINT DEFAULT 1 COMMENT '权限校验是否通过',
+    `permission_details` JSON DEFAULT NULL COMMENT '权限校验详情',
+    `error_message` VARCHAR(500) DEFAULT NULL COMMENT '错误信息',
+    `duration_ms` INT DEFAULT 0 COMMENT '处理耗时(毫秒)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_audit_no` (`audit_no`),
+    KEY `idx_warehouse_code` (`warehouse_code`),
+    KEY `idx_order_no` (`order_no`),
+    KEY `idx_result` (`result`),
+    KEY `idx_created_at` (`created_at`),
+    KEY `idx_target` (`target_type`, `target_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='履约回调审计日志表';
 
 -- API权限表
 CREATE TABLE IF NOT EXISTS `api_permissions` (

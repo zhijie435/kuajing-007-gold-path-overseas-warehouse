@@ -7,6 +7,7 @@ class WarehouseRouter {
     private $db;
     private $auditService;
     private $auditContext;
+    private $permissionContext;
 
     public function __construct() {
         $this->db = Database::getInstance();
@@ -16,10 +17,21 @@ class WarehouseRouter {
             'client_key' => null,
             'client_ip' => PermissionService::getClientIp(),
         ];
+        $this->permissionContext = [
+            'role' => null,
+            'warehouse_code' => null,
+        ];
     }
 
     public function setAuditContext($context) {
         $this->auditContext = array_merge($this->auditContext, $context);
+    }
+
+    public function setPermissionContext($role = null, $warehouseCode = null) {
+        $this->permissionContext = [
+            'role' => $role,
+            'warehouse_code' => $warehouseCode,
+        ];
     }
 
     private function getDurationMs() {
@@ -62,6 +74,8 @@ class WarehouseRouter {
     /**
      * 路由决策：根据商品、收货地址选择最优仓库
      * 算法优先级：1.库存充足 2.配送区域匹配 3.运费最低 4.时效最快 5.优先级最高
+     *
+     * 权限边界：对于 warehouse_operator 角色，仅允许选择分配给自己的仓库
      */
     public function route($items, $shippingCountry, $shippingState = null) {
         if (empty($items) || !is_array($items)) {
@@ -119,7 +133,10 @@ class WarehouseRouter {
                 : (int)$item['quantity'];
         }
 
-        $stockCheck = $this->checkAllWarehousesStock($skus, $skuQuantities);
+        $role = $this->permissionContext['role'] ?? null;
+        $scopeWarehouseCode = $this->permissionContext['warehouse_code'] ?? null;
+
+        $stockCheck = $this->checkAllWarehousesStock($skus, $skuQuantities, $scopeWarehouseCode);
         if (!$stockCheck['all_available']) {
             return $this->returnWithAudit([
                 'success' => false,
@@ -127,17 +144,23 @@ class WarehouseRouter {
                 'error_type' => 'INSUFFICIENT_STOCK',
                 'stock_details' => $stockCheck['details'],
                 'missing_skus' => $stockCheck['missing_skus'],
+                'permission_scoped' => !empty($scopeWarehouseCode),
+                'scope_warehouse_code' => $scopeWarehouseCode,
             ], $items, $shippingCountry, $shippingState);
         }
 
-        $candidateWarehouses = $this->findWarehousesWithAllStock($skus, $skuQuantities);
+        $candidateWarehouses = $this->findWarehousesWithAllStock($skus, $skuQuantities, $scopeWarehouseCode);
 
         if (empty($candidateWarehouses)) {
             return $this->returnWithAudit([
                 'success' => false,
-                'message' => '没有仓库同时拥有所有商品的充足库存，请尝试分拆订单或减少数量',
+                'message' => !empty($scopeWarehouseCode)
+                    ? "分配仓库 [{$scopeWarehouseCode}] 没有同时拥有所有商品的充足库存，请联系管理员"
+                    : '没有仓库同时拥有所有商品的充足库存，请尝试分拆订单或减少数量',
                 'error_type' => 'NO_WAREHOUSE_WITH_ALL_STOCK',
                 'stock_details' => $stockCheck['details'],
+                'permission_scoped' => !empty($scopeWarehouseCode),
+                'scope_warehouse_code' => $scopeWarehouseCode,
             ], $items, $shippingCountry, $shippingState);
         }
 
@@ -152,11 +175,15 @@ class WarehouseRouter {
             }
             return $this->writeAuditForResult([
                 'success' => false,
-                'message' => '候选仓库（' . implode('、', $warehouseNames) . '）均不支持配送到 ' . $shippingCountry . ($shippingState ? '/' . $shippingState : ''),
+                'message' => !empty($scopeWarehouseCode)
+                    ? "分配仓库 [{$scopeWarehouseCode}] 不支持配送到 {$shippingCountry}" . ($shippingState ? '/' . $shippingState : '') . "，请联系管理员"
+                    : '候选仓库（' . implode('、', $warehouseNames) . '）均不支持配送到 ' . $shippingCountry . ($shippingState ? '/' . $shippingState : ''),
                 'error_type' => 'NO_SHIPPING_ZONE',
                 'shipping_country' => $shippingCountry,
                 'shipping_state' => $shippingState,
                 'candidate_warehouses' => $warehouseNames,
+                'permission_scoped' => !empty($scopeWarehouseCode),
+                'scope_warehouse_code' => $scopeWarehouseCode,
             ], $items, $shippingCountry, $shippingState);
         }
 
@@ -203,6 +230,8 @@ class WarehouseRouter {
                 'success' => false,
                 'message' => '没有找到符合条件的仓库，请联系客服',
                 'error_type' => 'NO_MATCHED_WAREHOUSE',
+                'permission_scoped' => !empty($scopeWarehouseCode),
+                'scope_warehouse_code' => $scopeWarehouseCode,
             ], $items, $shippingCountry, $shippingState);
         }
 
@@ -215,6 +244,9 @@ class WarehouseRouter {
             'total_weight' => round($totalWeight, 2),
             'shipping_country' => $shippingCountry,
             'shipping_state' => $shippingState,
+            'permission_scoped' => !empty($scopeWarehouseCode),
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'permission_role' => $role,
         ];
 
         return $this->writeAuditForResult($result, $items, $shippingCountry, $shippingState);
@@ -222,8 +254,9 @@ class WarehouseRouter {
 
     /**
      * 检查所有仓库的库存情况，返回详细的库存信息
+     * 权限边界：若指定了 scopeWarehouseCode，则只检查该仓库
      */
-    private function checkAllWarehousesStock($skus, $skuQuantities) {
+    private function checkAllWarehousesStock($skus, $skuQuantities, $scopeWarehouseCode = null) {
         $placeholders = implode(',', array_fill(0, count($skus), '?'));
 
         $sql = "SELECT wi.warehouse_id, wi.sku, wi.quantity, w.warehouse_code, w.warehouse_name
@@ -231,7 +264,13 @@ class WarehouseRouter {
                 JOIN warehouses w ON wi.warehouse_id = w.id
                 WHERE wi.sku IN ($placeholders) AND w.status = 1";
 
-        $rows = $this->db->fetchAll($sql, $skus);
+        $params = $skus;
+        if (!empty($scopeWarehouseCode)) {
+            $sql .= " AND w.warehouse_code = ?";
+            $params[] = $scopeWarehouseCode;
+        }
+
+        $rows = $this->db->fetchAll($sql, $params);
 
         $details = [];
         $missingSkus = [];
@@ -258,14 +297,16 @@ class WarehouseRouter {
             ];
 
             if ($totalStock < $requiredQty) {
-                $missingSkus[] = "{$sku}(需要{$requiredQty}，总库存{$totalStock})";
+                $scopeNote = !empty($scopeWarehouseCode) ? "（范围:{$scopeWarehouseCode}）" : '';
+                $missingSkus[] = "{$sku}(需要{$requiredQty}，总库存{$totalStock}){$scopeNote}";
             }
         }
 
         $allAvailable = empty($missingSkus);
         $message = '';
         if (!$allAvailable) {
-            $message = '以下商品库存不足：' . implode('；', $missingSkus);
+            $prefix = !empty($scopeWarehouseCode) ? "仓库 [{$scopeWarehouseCode}] " : '';
+            $message = $prefix . '以下商品库存不足：' . implode('；', $missingSkus);
         }
 
         return [
@@ -278,8 +319,9 @@ class WarehouseRouter {
 
     /**
      * 查询拥有所有商品库存的仓库
+     * 权限边界：若指定了 scopeWarehouseCode，则只在该仓库内查询
      */
-    private function findWarehousesWithAllStock($skus, $skuQuantities) {
+    private function findWarehousesWithAllStock($skus, $skuQuantities, $scopeWarehouseCode = null) {
         $placeholders = implode(',', array_fill(0, count($skus), '?'));
 
         $sql = "SELECT wi.warehouse_id, wi.sku, wi.quantity, w.warehouse_code, w.warehouse_name, w.country, w.city, w.priority
@@ -287,7 +329,13 @@ class WarehouseRouter {
                 JOIN warehouses w ON wi.warehouse_id = w.id
                 WHERE wi.sku IN ($placeholders) AND w.status = 1 AND wi.quantity > 0";
 
-        $rows = $this->db->fetchAll($sql, $skus);
+        $params = $skus;
+        if (!empty($scopeWarehouseCode)) {
+            $sql .= " AND w.warehouse_code = ?";
+            $params[] = $scopeWarehouseCode;
+        }
+
+        $rows = $this->db->fetchAll($sql, $params);
 
         $warehouseStock = [];
         foreach ($rows as $row) {
@@ -373,19 +421,90 @@ class WarehouseRouter {
         return $total;
     }
 
-    public function listWarehouses($status = 1) {
+    /**
+     * 获取仓库列表
+     * 权限边界：内部实现仓库级筛选，确保列表和明细筛选逻辑一致
+     */
+    public function listWarehouses($status = 1, $scopeWarehouseCode = null) {
+        $where = [];
+        $params = [];
+
+        if ($status !== null) {
+            $where[] = "w.status = ?";
+            $params[] = $status;
+        }
+        if (!empty($scopeWarehouseCode)) {
+            $where[] = "w.warehouse_code = ?";
+            $params[] = $scopeWarehouseCode;
+        }
+
+        $whereSql = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
+
         $sql = "SELECT w.*,
                 (SELECT COUNT(*) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as sku_count,
                 (SELECT SUM(wi.quantity) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as total_stock
-                FROM warehouses w";
-        if ($status !== null) {
-            $sql .= " WHERE w.status = ?";
-            return $this->db->fetchAll($sql, [$status]);
-        }
-        return $this->db->fetchAll($sql);
+                FROM warehouses w {$whereSql}
+                ORDER BY w.priority DESC, w.id ASC";
+
+        return $this->db->fetchAll($sql, $params);
     }
 
-    public function getWarehouseInventory($warehouseId, $sku = null) {
+    /**
+     * 获取单个仓库详情（用于校验一致性）
+     */
+    public function getWarehouseByCode($warehouseCode) {
+        if (empty($warehouseCode)) {
+            return null;
+        }
+        $sql = "SELECT w.*,
+                (SELECT COUNT(*) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as sku_count,
+                (SELECT SUM(wi.quantity) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as total_stock
+                FROM warehouses w
+                WHERE w.warehouse_code = ? LIMIT 1";
+        return $this->db->fetchOne($sql, [$warehouseCode]);
+    }
+
+    /**
+     * 获取仓库库存
+     * 权限边界：内部先验证仓库是否符合权限范围，防止通过 ID 越权访问
+     */
+    public function getWarehouseInventory($warehouseId, $sku = null, $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'warehouse_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
+        if (empty($warehouseId)) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '缺少仓库ID参数';
+            return [];
+        }
+
+        $warehouse = $this->db->fetchOne(
+            "SELECT id, warehouse_code FROM warehouses WHERE id = ? LIMIT 1",
+            [$warehouseId]
+        );
+
+        $permissionCheck['warehouse_found'] = !empty($warehouse);
+        if (!$warehouse) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '仓库不存在';
+            return [];
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $warehouse['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $warehouse['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权访问仓库 [{$warehouse['warehouse_code']}]，当前仅可访问 [{$scopeWarehouseCode}]";
+            return [];
+        }
+
         $sql = "SELECT wi.*, p.name as product_name, p.weight, p.price, p.image_url
                 FROM warehouse_inventories wi
                 JOIN products p ON wi.product_id = p.id
@@ -395,6 +514,58 @@ class WarehouseRouter {
             $sql .= " AND wi.sku = ?";
             $params[] = $sku;
         }
+        $sql .= " ORDER BY wi.id ASC";
+
+        $permissionCheck['passed'] = true;
+        $permissionCheck['message'] = '权限校验通过';
         return $this->db->fetchAll($sql, $params);
+    }
+
+    /**
+     * 获取单个仓库的全部信息（含库存，用于列表-明细一致性校验）
+     */
+    public function getWarehouseDetail($warehouseId, $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'warehouse_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
+        if (empty($warehouseId)) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '缺少仓库ID参数';
+            return null;
+        }
+
+        $warehouse = $this->db->fetchOne(
+            "SELECT w.*,
+                    (SELECT COUNT(*) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as sku_count,
+                    (SELECT SUM(wi.quantity) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as total_stock
+             FROM warehouses w WHERE w.id = ? LIMIT 1",
+            [$warehouseId]
+        );
+
+        $permissionCheck['warehouse_found'] = !empty($warehouse);
+        if (!$warehouse) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '仓库不存在';
+            return null;
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $warehouse['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $warehouse['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权访问仓库 [{$warehouse['warehouse_code']}]，当前仅可访问 [{$scopeWarehouseCode}]";
+            return null;
+        }
+
+        $permissionCheck['passed'] = true;
+        $permissionCheck['message'] = '权限校验通过';
+        return $warehouse;
     }
 }
