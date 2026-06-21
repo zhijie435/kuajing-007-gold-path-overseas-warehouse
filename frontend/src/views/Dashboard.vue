@@ -148,13 +148,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { Document, Van, Loading, Warning, Plus, List, Goods, OfficeBuilding } from '@element-plus/icons-vue'
 import { getOrderList } from '@/api/order'
 import { getWarehouseList } from '@/api/warehouse'
+import { orderStore } from '@/store/order'
 
 const router = useRouter()
+const route = useRoute()
 
 const stats = ref({
   totalOrders: 0,
@@ -165,6 +167,7 @@ const stats = ref({
 
 const warehouses = ref([])
 const recentOrders = ref([])
+const lastRefreshVersion = ref(0)
 
 const orderStatusMap = {
   0: '待处理', 1: '已路由', 2: '已推送仓库', 3: '仓库已接单',
@@ -179,7 +182,10 @@ const getStatusType = (s) => {
   return 'warning'
 }
 
-const loadData = async () => {
+const loadData = async (force = false) => {
+  if (force) {
+    lastRefreshVersion.value = orderStore.refreshVersion
+  }
   try {
     const [res1, res2] = await Promise.all([
       getOrderList({ page: 1, page_size: 5 }),
@@ -194,13 +200,34 @@ const loadData = async () => {
   } catch (e) {}
 }
 
+watch(
+  () => orderStore.refreshVersion,
+  (newVal) => {
+    if (newVal !== lastRefreshVersion.value) {
+      loadData(true)
+    }
+  }
+)
+
+watch(
+  () => route.fullPath,
+  (newPath) => {
+    if (newPath === '/') {
+      loadData(true)
+    }
+  }
+)
+
 const goCreateOrder = () => router.push('/order/create')
 const goOrders = () => router.push('/orders')
 const goProducts = () => router.push('/products')
 const goWarehouses = () => router.push('/warehouses')
 const viewOrder = (no) => router.push('/orders/' + no)
 
-onMounted(loadData)
+onMounted(() => {
+  lastRefreshVersion.value = orderStore.refreshVersion
+  loadData()
+})
 </script>
 
 <style scoped>

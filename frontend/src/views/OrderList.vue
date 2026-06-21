@@ -3,7 +3,19 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span style="font-weight:600">订单列表</span>
+          <div style="display:flex;align-items:center;gap:12px">
+            <span style="font-weight:600">订单列表</span>
+            <el-button
+              type="primary"
+              link
+              @click="loadList(true)"
+              :loading="loading"
+              title="刷新数据"
+            >
+              <el-icon><Refresh /></el-icon>
+              刷新
+            </el-button>
+          </div>
           <div>
             <el-button type="primary" @click="$router.push('/order/create')">
               <el-icon><Plus /></el-icon>
@@ -128,13 +140,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, onMounted, watch, nextTick } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import { getOrderList, cancelOrder } from '@/api/order'
+import { orderStore } from '@/store/order'
 
 const router = useRouter()
+const route = useRoute()
 
 const list = ref([])
 const loading = ref(false)
@@ -142,6 +156,7 @@ const total = ref(0)
 const orderStatusMap = ref({})
 const fulfillmentStatusMap = ref({})
 const dateRange = ref([])
+const lastRefreshVersion = ref(0)
 
 const query = reactive({
   page: 1,
@@ -159,7 +174,10 @@ const getStatusType = (s) => {
   return 'warning'
 }
 
-const loadList = async () => {
+const loadList = async (force = false) => {
+  if (force) {
+    lastRefreshVersion.value = orderStore.refreshVersion
+  }
   loading.value = true
   try {
     const params = { ...query }
@@ -184,7 +202,7 @@ const resetQuery = () => {
   query.order_status = ''
   query.customer_phone = ''
   dateRange.value = []
-  loadList()
+  loadList(true)
 }
 
 const viewDetail = (no) => router.push('/orders/' + no)
@@ -198,11 +216,35 @@ const handleCancel = async (row) => {
     )
     await cancelOrder(row.order_no, '用户主动取消')
     ElMessage.success('订单已取消')
-    loadList()
+    orderStore.triggerRefresh()
+    loadList(true)
   } catch (e) {}
 }
 
-onMounted(loadList)
+watch(
+  () => orderStore.refreshVersion,
+  (newVal) => {
+    if (newVal !== lastRefreshVersion.value) {
+      loadList(true)
+    }
+  }
+)
+
+watch(
+  () => route.fullPath,
+  (newPath, oldPath) => {
+    if (newPath.startsWith('/orders') && !newPath.startsWith('/orders/')) {
+      if (oldPath && oldPath.startsWith('/orders/')) {
+        nextTick(() => loadList(true))
+      }
+    }
+  }
+)
+
+onMounted(() => {
+  lastRefreshVersion.value = orderStore.refreshVersion
+  loadList()
+})
 </script>
 
 <style scoped>

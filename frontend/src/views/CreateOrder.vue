@@ -197,6 +197,7 @@ import { Position, Check } from '@element-plus/icons-vue'
 import { getProductList } from '@/api/product'
 import { calculateRoute } from '@/api/warehouse'
 import { createOrder } from '@/api/order'
+import { orderStore } from '@/store/order'
 
 const router = useRouter()
 const formRef = ref()
@@ -303,6 +304,7 @@ const submitOrder = async () => {
       }
       const res = await createOrder(payload)
       ElMessage.success('订单创建成功！订单号：' + res.order_no)
+      orderStore.triggerRefresh()
       setTimeout(() => router.push('/orders/' + res.order_no), 800)
     } catch (e) {
     } finally {

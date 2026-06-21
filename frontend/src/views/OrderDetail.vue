@@ -1,8 +1,13 @@
 <template>
   <div v-loading="loading">
-    <el-button @click="$router.back()" style="margin-bottom:16px">
-      <el-icon><ArrowLeft /></el-icon> 返回
-    </el-button>
+    <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
+      <el-button @click="$router.back()">
+        <el-icon><ArrowLeft /></el-icon> 返回
+      </el-button>
+      <el-button type="primary" @click="loadDetail()" :loading="loading">
+        <el-icon><Refresh /></el-icon> 刷新
+      </el-button>
+    </div>
 
     <el-row :gutter="20" v-if="detail">
       <el-col :span="16">
@@ -146,15 +151,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft, Promotion, Sort, Box, Van, CircleCheck, WarningFilled,
-  Loading as LoadingIcon
+  Loading as LoadingIcon, Refresh
 } from '@element-plus/icons-vue'
 import { getOrderDetail, cancelOrder } from '@/api/order'
 import request from '@/api/request'
+import { orderStore } from '@/store/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -225,6 +231,7 @@ const handleCancel = async () => {
     await ElMessageBox.confirm('确定要取消该订单吗？', '提示', { type: 'warning' })
     await cancelOrder(route.params.orderNo, '用户取消')
     ElMessage.success('已取消')
+    orderStore.triggerRefresh()
     loadDetail()
   } catch (e) {}
 }
@@ -262,11 +269,21 @@ const mockCallback = async () => {
       data: baseData
     })
     ElMessage.success('回调触发成功')
+    orderStore.triggerRefresh()
     loadDetail()
   } catch (e) {} finally {
     mockLoading.value = false
   }
 }
+
+watch(
+  () => route.params.orderNo,
+  (newOrderNo, oldOrderNo) => {
+    if (newOrderNo && newOrderNo !== oldOrderNo) {
+      loadDetail()
+    }
+  }
+)
 
 onMounted(loadDetail)
 </script>
