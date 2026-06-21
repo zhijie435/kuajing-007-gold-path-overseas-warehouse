@@ -12,9 +12,6 @@ class OrderService {
         $this->router = new WarehouseRouter();
     }
 
-    /**
-     * 校验订单参数
-     */
     private function validateOrderData($data) {
         $errors = [];
         $clean = [];
@@ -158,16 +155,17 @@ class OrderService {
         ];
     }
 
-    /**
-     * 创建订单：包含路由决策、库存锁定、订单持久化
-     */
-    public function createOrder($data, $traceId = null, $appId = null) {
+    public function createOrder($data, $traceId = null, $appId = null, $scopeWarehouseCode = null) {
         $validateResult = $this->validateOrderData($data);
         if (!$validateResult['success']) {
             return $validateResult;
         }
 
         $cleanData = $validateResult['data'];
+
+        if (!empty($scopeWarehouseCode)) {
+            $this->router->setPermissionContext('warehouse_operator', $scopeWarehouseCode);
+        }
 
         $routeResult = $this->router->route(
             $cleanData['items'],
@@ -182,6 +180,8 @@ class OrderService {
                 'success' => false,
                 'message' => '仓库路由失败: ' . $routeResult['message'],
                 'error_type' => 'ROUTING_ERROR',
+                'rollback' => true,
+                'retryable' => true,
                 'details' => $routeResult
             ];
         }
@@ -190,11 +190,28 @@ class OrderService {
             return [
                 'success' => false,
                 'message' => '未找到匹配的仓库，请检查商品库存或收货地址',
-                'error_type' => 'NO_WAREHOUSE_MATCHED'
+                'error_type' => 'NO_WAREHOUSE_MATCHED',
+                'rollback' => true,
+                'retryable' => false,
+                'details' => $routeResult
             ];
         }
 
         $warehouse = $routeResult['selected_warehouse'];
+
+        if (!empty($scopeWarehouseCode) && $warehouse['warehouse_code'] !== $scopeWarehouseCode) {
+            return [
+                'success' => false,
+                'message' => "仓库路由结果与分配仓库不匹配，路由选择了仓库 [{$warehouse['warehouse_code']}]，但您仅可操作 [{$scopeWarehouseCode}]",
+                'error_type' => 'WAREHOUSE_SCOPE_MISMATCH',
+                'rollback' => true,
+                'retryable' => false,
+                'details' => [
+                    'route_result' => $warehouse['warehouse_code'],
+                    'scope_warehouse' => $scopeWarehouseCode
+                ]
+            ];
+        }
 
         $this->db->beginTransaction();
 
@@ -286,6 +303,8 @@ class OrderService {
                 'total_amount' => round($totalAmount, 2),
                 'shipping_cost' => $shippingCost,
                 'estimated_delivery_date' => $warehouse['estimated_delivery_date'],
+                'permission_scoped' => !empty($scopeWarehouseCode),
+                'scope_warehouse_code' => $scopeWarehouseCode,
             ];
 
         } catch (Exception $e) {
@@ -304,9 +323,6 @@ class OrderService {
         }
     }
 
-    /**
-     * 锁定库存
-     */
     private function lockInventory($warehouseId, $productId, $quantity) {
         $sql = "UPDATE warehouse_inventories
                 SET quantity = quantity - :qty, reserved_quantity = reserved_quantity + :qty
@@ -322,9 +338,6 @@ class OrderService {
         }
     }
 
-    /**
-     * 模拟推送订单到仓库WMS系统
-     */
     private function pushToWarehouse($orderId, $orderNo, $warehouse, $items, $shippingInfo) {
         $warehouseOrderNo = 'WMS' . date('YmdHis') . mt_rand(1000, 9999);
 
@@ -355,9 +368,6 @@ class OrderService {
         ]);
     }
 
-    /**
-     * 查询订单列表
-     */
     public function listOrders($params = []) {
         $page = isset($params['page']) ? max(1, (int)$params['page']) : 1;
         $pageSize = isset($params['page_size']) ? min(100, max(1, (int)$params['page_size'])) : 20;
@@ -367,37 +377,41 @@ class OrderService {
         $bindParams = [];
 
         if (!empty($params['order_no'])) {
-            $where[] = 'order_no = ?';
+            $where[] = 'o.order_no = ?';
             $bindParams[] = $params['order_no'];
         }
         if (!empty($params['external_order_no'])) {
-            $where[] = 'external_order_no = ?';
+            $where[] = 'o.external_order_no = ?';
             $bindParams[] = $params['external_order_no'];
         }
         if (isset($params['order_status']) && $params['order_status'] !== '') {
-            $where[] = 'order_status = ?';
+            $where[] = 'o.order_status = ?';
             $bindParams[] = (int)$params['order_status'];
         }
         if (isset($params['warehouse_id']) && $params['warehouse_id'] !== '') {
-            $where[] = 'warehouse_id = ?';
+            $where[] = 'o.warehouse_id = ?';
             $bindParams[] = (int)$params['warehouse_id'];
         }
+        if (!empty($params['scope_warehouse_code'])) {
+            $where[] = 'w.warehouse_code = ?';
+            $bindParams[] = $params['scope_warehouse_code'];
+        }
         if (!empty($params['customer_phone'])) {
-            $where[] = 'customer_phone LIKE ?';
+            $where[] = 'o.customer_phone LIKE ?';
             $bindParams[] = '%' . $params['customer_phone'] . '%';
         }
         if (!empty($params['start_date'])) {
-            $where[] = 'created_at >= ?';
+            $where[] = 'o.created_at >= ?';
             $bindParams[] = $params['start_date'] . ' 00:00:00';
         }
         if (!empty($params['end_date'])) {
-            $where[] = 'created_at <= ?';
+            $where[] = 'o.created_at <= ?';
             $bindParams[] = $params['end_date'] . ' 23:59:59';
         }
 
         $whereSql = implode(' AND ', $where);
 
-        $countSql = "SELECT COUNT(*) as cnt FROM orders WHERE $whereSql";
+        $countSql = "SELECT COUNT(*) as cnt FROM orders o LEFT JOIN warehouses w ON o.warehouse_id = w.id WHERE $whereSql";
         $totalRow = $this->db->fetchOne($countSql, $bindParams);
         $total = (int)$totalRow['cnt'];
 
@@ -416,13 +430,21 @@ class OrderService {
             'page' => $page,
             'page_size' => $pageSize,
             'total_pages' => ceil($total / $pageSize),
+            'permission_scoped' => !empty($params['scope_warehouse_code']),
+            'scope_warehouse_code' => $params['scope_warehouse_code'] ?? null,
         ];
     }
 
-    /**
-     * 查询订单详情
-     */
-    public function getOrderDetail($orderNo) {
+    public function getOrderDetail($orderNo, $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'order_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
         $order = $this->db->fetchOne(
             "SELECT o.*, w.warehouse_name as warehouse_name
              FROM orders o
@@ -431,7 +453,20 @@ class OrderService {
             [$orderNo]
         );
 
+        $permissionCheck['order_found'] = !empty($order);
+
         if (!$order) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '订单不存在';
+            return null;
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $order['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $order['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权查看订单 [{$orderNo}]，该订单属于仓库 [{$order['warehouse_code']}]，当前仅可查看 [{$scopeWarehouseCode}]";
             return null;
         }
 
@@ -448,20 +483,48 @@ class OrderService {
         $order['items'] = $items;
         $order['tracks'] = $tracks;
 
+        $permissionCheck['passed'] = true;
+        $permissionCheck['message'] = '权限校验通过';
         return $order;
     }
 
-    /**
-     * 取消订单
-     */
-    public function cancelOrder($orderNo, $reason = '') {
+    public function cancelOrder($orderNo, $reason = '', $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'order_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
         $order = $this->db->fetchOne("SELECT * FROM orders WHERE order_no = ?", [$orderNo]);
+
+        $permissionCheck['order_found'] = !empty($order);
+
         if (!$order) {
-            return ['success' => false, 'message' => '订单不存在'];
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '订单不存在';
+            return ['success' => false, 'message' => '订单不存在', 'error_type' => 'ORDER_NOT_FOUND'];
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $order['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $order['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权取消订单 [{$orderNo}]，该订单属于仓库 [{$order['warehouse_code']}]，当前仅可操作 [{$scopeWarehouseCode}]";
+            return [
+                'success' => false,
+                'message' => $permissionCheck['message'],
+                'error_type' => 'WAREHOUSE_SCOPE_MISMATCH'
+            ];
         }
 
         if ($order['order_status'] >= 4) {
-            return ['success' => false, 'message' => '订单已出库，无法取消'];
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '订单已出库，无法取消';
+            return ['success' => false, 'message' => '订单已出库，无法取消', 'error_type' => 'ORDER_ALREADY_SHIPPED'];
         }
 
         $this->db->beginTransaction();
@@ -496,10 +559,12 @@ class OrderService {
             );
 
             $this->db->commit();
+            $permissionCheck['passed'] = true;
+            $permissionCheck['message'] = '订单已取消';
             return ['success' => true, 'message' => '订单已取消'];
         } catch (Exception $e) {
             $this->db->rollBack();
-            return ['success' => false, 'message' => $e->getMessage()];
+            return ['success' => false, 'message' => $e->getMessage(), 'error_type' => 'ORDER_CANCEL_FAILED'];
         }
     }
 
