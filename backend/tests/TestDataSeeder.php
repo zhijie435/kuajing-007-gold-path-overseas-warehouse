@@ -81,20 +81,20 @@ class TestDataSeeder {
 
     public static function seedInventories($db) {
         $inventories = [
-            ['warehouse_id' => 1, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 500, 'reserved_quantity' => 0,
-            ['warehouse_id' => 1, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 200, 'reserved_quantity' => 0,
-            ['warehouse_id' => 1, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 800, 'reserved_quantity' => 0,
-            ['warehouse_id' => 1, 'product_id' => 4, 'sku' => 'SKU004', 'quantity' => 2000, 'reserved_quantity' => 0,
-            ['warehouse_id' => 1, 'product_id' => 5, 'sku' => 'SKU005', 'quantity' => 150, 'reserved_quantity' => 0,
-            ['warehouse_id' => 2, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 600, 'reserved_quantity' => 0,
-            ['warehouse_id' => 2, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 250, 'reserved_quantity' => 0,
-            ['warehouse_id' => 2, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 900, 'reserved_quantity' => 0,
-            ['warehouse_id' => 2, 'product_id' => 4, 'sku' => 'SKU004', 'quantity' => 2500, 'reserved_quantity' => 0,
-            ['warehouse_id' => 3, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 300, 'reserved_quantity' => 0,
-            ['warehouse_id' => 3, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 150, 'reserved_quantity' => 0,
-            ['warehouse_id' => 3, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 400, 'reserved_quantity' => 0,
-            ['warehouse_id' => 4, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 350, 'reserved_quantity' => 0,
-            ['warehouse_id' => 4, 'product_id' => 5, 'sku' => 'SKU005', 'quantity' => 100, 'reserved_quantity' => 0,
+            ['warehouse_id' => 1, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 500, 'reserved_quantity' => 0],
+            ['warehouse_id' => 1, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 200, 'reserved_quantity' => 0],
+            ['warehouse_id' => 1, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 800, 'reserved_quantity' => 0],
+            ['warehouse_id' => 1, 'product_id' => 4, 'sku' => 'SKU004', 'quantity' => 2000, 'reserved_quantity' => 0],
+            ['warehouse_id' => 1, 'product_id' => 5, 'sku' => 'SKU005', 'quantity' => 150, 'reserved_quantity' => 0],
+            ['warehouse_id' => 2, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 600, 'reserved_quantity' => 0],
+            ['warehouse_id' => 2, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 250, 'reserved_quantity' => 0],
+            ['warehouse_id' => 2, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 900, 'reserved_quantity' => 0],
+            ['warehouse_id' => 2, 'product_id' => 4, 'sku' => 'SKU004', 'quantity' => 2500, 'reserved_quantity' => 0],
+            ['warehouse_id' => 3, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 300, 'reserved_quantity' => 0],
+            ['warehouse_id' => 3, 'product_id' => 2, 'sku' => 'SKU002', 'quantity' => 150, 'reserved_quantity' => 0],
+            ['warehouse_id' => 3, 'product_id' => 3, 'sku' => 'SKU003', 'quantity' => 400, 'reserved_quantity' => 0],
+            ['warehouse_id' => 4, 'product_id' => 1, 'sku' => 'SKU001', 'quantity' => 350, 'reserved_quantity' => 0],
+            ['warehouse_id' => 4, 'product_id' => 5, 'sku' => 'SKU005', 'quantity' => 100, 'reserved_quantity' => 0],
         ];
         $db->seedInventories($inventories);
     }
