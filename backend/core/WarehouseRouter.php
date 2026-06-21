@@ -76,8 +76,17 @@ class WarehouseRouter {
      * 算法优先级：1.库存充足 2.配送区域匹配 3.运费最低 4.时效最快 5.优先级最高
      *
      * 权限边界：对于 warehouse_operator 角色，仅允许选择分配给自己的仓库
+     *
+     * @param array $items 商品列表
+     * @param string $shippingCountry 收货国家
+     * @param string|null $shippingState 收货州/省
+     * @param string|null $_traceId 兼容参数（旧调用方式，忽略，由 AuditService 自行生成）
+     * @param string|null $_clientKey 兼容参数（旧调用方式，忽略，建议通过 setAuditContext 设置）
      */
-    public function route($items, $shippingCountry, $shippingState = null) {
+    public function route($items, $shippingCountry, $shippingState = null, $_traceId = null, $_clientKey = null) {
+        if ($_clientKey !== null && empty($this->auditContext['client_key'])) {
+            $this->auditContext['client_key'] = $_clientKey;
+        }
         if (empty($items) || !is_array($items)) {
             return $this->writeAuditForResult([
                 'success' => false,
