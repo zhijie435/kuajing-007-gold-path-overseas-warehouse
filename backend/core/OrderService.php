@@ -161,7 +161,7 @@ class OrderService {
     /**
      * 创建订单：包含路由决策、库存锁定、订单持久化
      */
-    public function createOrder($data) {
+    public function createOrder($data, $traceId = null, $appId = null) {
         $validateResult = $this->validateOrderData($data);
         if (!$validateResult['success']) {
             return $validateResult;
@@ -172,7 +172,9 @@ class OrderService {
         $routeResult = $this->router->route(
             $cleanData['items'],
             $cleanData['shipping_country'],
-            $cleanData['shipping_state'] ?? null
+            $cleanData['shipping_state'] ?? null,
+            $traceId,
+            $appId
         );
 
         if (!$routeResult['success']) {

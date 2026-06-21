@@ -1,11 +1,62 @@
 <?php
 require_once __DIR__ . '/../core/Database.php';
+require_once __DIR__ . '/../core/AuditService.php';
+require_once __DIR__ . '/../core/PermissionService.php';
 
 class WarehouseRouter {
     private $db;
+    private $auditService;
+    private $auditContext;
 
     public function __construct() {
         $this->db = Database::getInstance();
+        $this->auditService = new AuditService();
+        $this->auditContext = [
+            'start_time' => microtime(true),
+            'client_key' => null,
+            'client_ip' => PermissionService::getClientIp(),
+        ];
+    }
+
+    public function setAuditContext($context) {
+        $this->auditContext = array_merge($this->auditContext, $context);
+    }
+
+    private function getDurationMs() {
+        return (int)round((microtime(true) - $this->auditContext['start_time']) * 1000);
+    }
+
+    private function returnWithAudit($result, $items, $shippingCountry, $shippingState = null) {
+        try {
+            $auditParams = [
+                'client_key' => $this->auditContext['client_key'] ?? null,
+                'client_ip' => $this->auditContext['client_ip'] ?? PermissionService::getClientIp(),
+                'items' => $items,
+                'shipping_country' => $shippingCountry,
+                'shipping_state' => $shippingState,
+                'success' => $result['success'] ?? false,
+                'error_type' => $result['error_type'] ?? null,
+                'error_message' => $result['message'] ?? null,
+                'duration_ms' => $this->getDurationMs(),
+            ];
+
+            if (!empty($result['selected_warehouse'])) {
+                $auditParams['selected_warehouse'] = $result['selected_warehouse'];
+            }
+            if (!empty($result['alternatives'])) {
+                $auditParams['alternatives'] = $result['alternatives'];
+            }
+
+            $this->auditService->logWarehouseRoute($auditParams);
+        } catch (Exception $e) {
+            error_log('WarehouseRouter returnWithAudit exception: ' . $e->getMessage());
+        }
+
+        return $result;
+    }
+
+    private function writeAuditForResult($result, $items, $shippingCountry, $shippingState = null) {
+        return $this->returnWithAudit($result, $items, $shippingCountry, $shippingState);
     }
 
     /**
@@ -14,19 +65,19 @@ class WarehouseRouter {
      */
     public function route($items, $shippingCountry, $shippingState = null) {
         if (empty($items) || !is_array($items)) {
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '商品信息不能为空',
                 'error_type' => 'EMPTY_ITEMS',
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         if (empty($shippingCountry)) {
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '收货国家不能为空',
                 'error_type' => 'EMPTY_COUNTRY',
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $invalidSkus = [];
@@ -42,21 +93,21 @@ class WarehouseRouter {
         }
 
         if (!empty($invalidSkus)) {
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '第 ' . implode('、', $invalidSkus) . ' 个商品的 SKU 不能为空',
                 'error_type' => 'INVALID_SKU',
                 'item_indexes' => $invalidSkus,
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         if (!empty($invalidQtys)) {
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '商品 ' . implode('、', $invalidQtys) . ' 的数量必须大于 0',
                 'error_type' => 'INVALID_QUANTITY',
                 'skus' => $invalidQtys,
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $skus = array_column($items, 'sku');
@@ -70,24 +121,24 @@ class WarehouseRouter {
 
         $stockCheck = $this->checkAllWarehousesStock($skus, $skuQuantities);
         if (!$stockCheck['all_available']) {
-            return [
+            return $this->returnWithAudit([
                 'success' => false,
                 'message' => $stockCheck['message'],
                 'error_type' => 'INSUFFICIENT_STOCK',
                 'stock_details' => $stockCheck['details'],
                 'missing_skus' => $stockCheck['missing_skus'],
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $candidateWarehouses = $this->findWarehousesWithAllStock($skus, $skuQuantities);
 
         if (empty($candidateWarehouses)) {
-            return [
+            return $this->returnWithAudit([
                 'success' => false,
                 'message' => '没有仓库同时拥有所有商品的充足库存，请尝试分拆订单或减少数量',
                 'error_type' => 'NO_WAREHOUSE_WITH_ALL_STOCK',
                 'stock_details' => $stockCheck['details'],
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $warehouseIds = array_keys($candidateWarehouses);
@@ -99,14 +150,14 @@ class WarehouseRouter {
             foreach ($candidateWarehouses as $w) {
                 $warehouseNames[] = $w['warehouse_name'] . '(' . $w['warehouse_code'] . ')';
             }
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '候选仓库（' . implode('、', $warehouseNames) . '）均不支持配送到 ' . $shippingCountry . ($shippingState ? '/' . $shippingState : ''),
                 'error_type' => 'NO_SHIPPING_ZONE',
                 'shipping_country' => $shippingCountry,
                 'shipping_state' => $shippingState,
                 'candidate_warehouses' => $warehouseNames,
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $totalWeight = $this->calculateTotalWeight($items);
@@ -148,16 +199,16 @@ class WarehouseRouter {
         });
 
         if (empty($scored)) {
-            return [
+            return $this->writeAuditForResult([
                 'success' => false,
                 'message' => '没有找到符合条件的仓库，请联系客服',
                 'error_type' => 'NO_MATCHED_WAREHOUSE',
-            ];
+            ], $items, $shippingCountry, $shippingState);
         }
 
         $best = $scored[0];
 
-        return [
+        $result = [
             'success' => true,
             'selected_warehouse' => $best,
             'alternatives' => array_slice($scored, 1, 3),
@@ -165,6 +216,8 @@ class WarehouseRouter {
             'shipping_country' => $shippingCountry,
             'shipping_state' => $shippingState,
         ];
+
+        return $this->writeAuditForResult($result, $items, $shippingCountry, $shippingState);
     }
 
     /**

@@ -1,30 +1,152 @@
 <?php
 require_once __DIR__ . '/../core/Database.php';
 require_once __DIR__ . '/../core/OrderService.php';
+require_once __DIR__ . '/../core/PermissionService.php';
+require_once __DIR__ . '/../core/AuditService.php';
 
 class FulfillmentCallbackService {
     private $db;
     private $config;
+    private $permissionService;
+    private $auditService;
+    private $startTime;
 
     public function __construct() {
         $this->db = Database::getInstance();
         $this->config = require __DIR__ . '/../config/config.php';
+        $this->permissionService = new PermissionService();
+        $this->auditService = new AuditService();
+        $this->startTime = microtime(true);
+    }
+
+    private function getDurationMs() {
+        return (int)round((microtime(true) - $this->startTime) * 1000);
     }
 
     /**
-     * 验证回调Token
+     * 验证回调Token（兼容旧接口，保留向后兼容）
      */
     public function validateToken($token) {
         return $token === $this->config['callback']['token'];
     }
 
     /**
+     * 执行完整的权限边界校验：Token + IP白名单 + 仓库订单一致性
+     */
+    public function validateCallbackPermission($warehouseCode, $orderNo, $token, &$permissionDetails = []) {
+        $result = [
+            'success' => false,
+            'token_verified' => false,
+            'warehouse_found' => false,
+            'warehouse_status_ok' => false,
+            'ip_verified' => true,
+            'warehouse_match_verified' => false,
+            'order_warehouse_code' => null,
+            'error_message' => '',
+            'error_code' => '',
+        ];
+
+        $tokenDetails = [];
+        $tokenVerify = $this->permissionService->verifyFulfillmentCallbackToken($warehouseCode, $token, $tokenDetails);
+        $permissionDetails['token_verify'] = $tokenDetails;
+
+        $result['token_verified'] = $tokenVerify['token_verified'];
+        $result['warehouse_found'] = $tokenVerify['warehouse_found'];
+        $result['warehouse_status_ok'] = $tokenVerify['warehouse_status_ok'];
+        $result['ip_verified'] = $tokenVerify['ip_verified'];
+
+        if (!$tokenVerify['success']) {
+            $result['error_message'] = $tokenVerify['error_message'];
+            $result['error_code'] = 'TOKEN_OR_IP_VERIFY_FAILED';
+            return $result;
+        }
+
+        if (!empty($orderNo)) {
+            $matchDetails = [];
+            $matchVerify = $this->permissionService->verifyWarehouseOrderMatch($warehouseCode, $orderNo, $matchDetails);
+            $permissionDetails['warehouse_order_match'] = $matchDetails;
+
+            $result['warehouse_match_verified'] = $matchVerify['warehouse_matched'];
+            $result['order_warehouse_code'] = $matchVerify['order_warehouse_code'];
+
+            if (!$matchVerify['success']) {
+                $result['error_message'] = $matchVerify['error_message'];
+                $result['error_code'] = 'WAREHOUSE_ORDER_MISMATCH';
+                return $result;
+            }
+        } else {
+            $result['warehouse_match_verified'] = true;
+            $permissionDetails['warehouse_order_match'] = ['note' => '订单号为空，跳过仓库一致性校验'];
+        }
+
+        $result['success'] = true;
+        return $result;
+    }
+
+    /**
      * 统一回调处理入口
      */
-    public function handle($callbackType, $data, $rawBody = '') {
+    public function handle($callbackType, $data, $rawBody = '', $token = '') {
+        $warehouseCode = $data['warehouse_code'] ?? '';
+        $orderNo = $data['order_no'] ?? '';
+
+        $permissionDetails = [];
+        $permissionCheck = $this->validateCallbackPermission($warehouseCode, $orderNo, $token, $permissionDetails);
+
         $logId = $this->logCallback($callbackType, $data, $rawBody);
+        $this->auditService->updateCallbackLogWithPermission($logId, [
+            'order_warehouse_code' => $permissionCheck['order_warehouse_code'],
+            'client_ip' => PermissionService::getClientIp(),
+            'token_verified' => $permissionCheck['token_verified'],
+            'warehouse_match_verified' => $permissionCheck['warehouse_match_verified'],
+            'ip_verified' => $permissionCheck['ip_verified'],
+            'permission_check_passed' => $permissionCheck['success'],
+            'permission_details' => $permissionDetails,
+        ]);
+
+        $auditNo = $this->auditService->logFulfillmentCallbackEvent([
+            'warehouse_code' => $warehouseCode,
+            'order_no' => $orderNo,
+            'request_data' => $data,
+            'success' => false,
+            'permission_check_passed' => $permissionCheck['success'],
+            'permission_details' => $permissionDetails,
+            'error_message' => $permissionCheck['success'] ? null : $permissionCheck['error_message'],
+            'client_ip' => PermissionService::getClientIp(),
+        ]);
+
+        $this->auditService->updateCallbackLogWithPermission($logId, ['audit_no' => $auditNo]);
+
+        if (!$permissionCheck['success']) {
+            $permissionError = [
+                'success' => false,
+                'message' => '[权限拦截] ' . $permissionCheck['error_message'],
+                'error_code' => $permissionCheck['error_code'] ?? 'PERMISSION_DENIED',
+                'permission_denied' => true,
+            ];
+            $this->updateCallbackLog($logId, $permissionError, $permissionCheck['error_message']);
+            $this->auditService->logFulfillmentCallbackEvent([
+                'audit_no' => $auditNo,
+                'warehouse_code' => $warehouseCode,
+                'order_no' => $orderNo,
+                'request_data' => $data,
+                'response_data' => $permissionError,
+                'success' => false,
+                'permission_check_passed' => false,
+                'permission_details' => $permissionDetails,
+                'error_message' => $permissionCheck['error_message'],
+                'duration_ms' => $this->getDurationMs(),
+                'client_ip' => PermissionService::getClientIp(),
+            ]);
+            return $permissionError;
+        }
 
         try {
+            $oldOrder = null;
+            if (!empty($orderNo)) {
+                $oldOrder = $this->getOrder($orderNo);
+            }
+
             switch ($callbackType) {
                 case 'ORDER_ACCEPT':
                     $result = $this->handleOrderAccept($data);
@@ -48,12 +170,55 @@ class FulfillmentCallbackService {
                     $result = ['success' => false, 'message' => "未知回调类型: {$callbackType}"];
             }
 
+            $newOrder = null;
+            if (!empty($orderNo) && $result['success']) {
+                $newOrder = $this->getOrder($orderNo);
+            }
+
             $this->updateCallbackLog($logId, $result);
+
+            $this->auditService->updateCallbackLogWithPermission($logId, [
+                'duration_ms' => $this->getDurationMs(),
+            ]);
+
+            $this->auditService->logFulfillmentCallbackEvent([
+                'audit_no' => $auditNo,
+                'warehouse_code' => $warehouseCode,
+                'order_no' => $orderNo,
+                'target_type' => 'ORDER',
+                'target_id' => $orderNo,
+                'request_data' => $data,
+                'response_data' => $result,
+                'old_data' => $oldOrder,
+                'new_data' => $newOrder,
+                'success' => $result['success'],
+                'error_message' => $result['success'] ? null : ($result['message'] ?? null),
+                'permission_check_passed' => true,
+                'permission_details' => $permissionDetails,
+                'duration_ms' => $this->getDurationMs(),
+                'client_ip' => PermissionService::getClientIp(),
+            ]);
+
             return $result;
 
         } catch (Exception $e) {
             $error = ['success' => false, 'message' => '回调处理异常: ' . $e->getMessage()];
             $this->updateCallbackLog($logId, $error, $e->getMessage());
+            $this->auditService->logFulfillmentCallbackEvent([
+                'audit_no' => $auditNo,
+                'warehouse_code' => $warehouseCode,
+                'order_no' => $orderNo,
+                'target_type' => 'ORDER',
+                'target_id' => $orderNo,
+                'request_data' => $data,
+                'response_data' => $error,
+                'success' => false,
+                'error_message' => $e->getMessage(),
+                'permission_check_passed' => true,
+                'permission_details' => $permissionDetails,
+                'duration_ms' => $this->getDurationMs(),
+                'client_ip' => PermissionService::getClientIp(),
+            ]);
             return $error;
         }
     }
@@ -356,6 +521,10 @@ class FulfillmentCallbackService {
         $where = ['1=1'];
         $bindParams = [];
 
+        if (!empty($params['warehouse_code'])) {
+            $where[] = 'warehouse_code = ?';
+            $bindParams[] = $params['warehouse_code'];
+        }
         if (!empty($params['order_no'])) {
             $where[] = 'order_no = ?';
             $bindParams[] = $params['order_no'];
@@ -367,6 +536,22 @@ class FulfillmentCallbackService {
         if (isset($params['is_processed']) && $params['is_processed'] !== '') {
             $where[] = 'is_processed = ?';
             $bindParams[] = (int)$params['is_processed'];
+        }
+        if (!empty($params['warehouse_code'])) {
+            $where[] = 'warehouse_code = ?';
+            $bindParams[] = $params['warehouse_code'];
+        }
+        if (isset($params['permission_check_passed']) && $params['permission_check_passed'] !== '') {
+            $where[] = 'permission_check_passed = ?';
+            $bindParams[] = (int)$params['permission_check_passed'];
+        }
+        if (!empty($params['start_date'])) {
+            $where[] = 'created_at >= ?';
+            $bindParams[] = $params['start_date'] . ' 00:00:00';
+        }
+        if (!empty($params['end_date'])) {
+            $where[] = 'created_at <= ?';
+            $bindParams[] = $params['end_date'] . ' 23:59:59';
         }
 
         $whereSql = implode(' AND ', $where);

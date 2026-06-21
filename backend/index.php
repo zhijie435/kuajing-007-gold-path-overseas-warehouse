@@ -10,12 +10,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once __DIR__ . '/core/Response.php';
 require_once __DIR__ . '/core/Request.php';
+require_once __DIR__ . '/core/PermissionGuard.php';
+require_once __DIR__ . '/core/AuditLogger.php';
 
 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $uri = preg_replace('#^/backend#', '', $uri);
 
 try {
-    if (strpos($uri, '/api/warehouse') === 0 || strpos($uri, '/api/warehouses') === 0) {
+    if (strpos($uri, '/api/audit/logs') === 0) {
+        $guard = new PermissionGuard();
+        $audit = new AuditLogger();
+        $permCheck = $guard->check('audit_log_view');
+        if (!$permCheck['allowed']) {
+            $audit->logPermissionDenied('audit_log_view', $permCheck['reason'] ?? 'unknown', [
+                'role' => $permCheck['role'],
+            ]);
+            Response::unauthorized($permCheck['message']);
+        }
+        $result = $audit->listLogs($_GET);
+        Response::success($result);
+    } elseif (strpos($uri, '/api/warehouse') === 0 || strpos($uri, '/api/warehouses') === 0) {
         require __DIR__ . '/api/warehouse.php';
     } elseif (strpos($uri, '/api/orders') === 0) {
         require __DIR__ . '/api/orders.php';
@@ -39,6 +53,7 @@ try {
                 'GET /api/fulfillment/callback/logs' => '获取回调日志',
                 'GET /api/products' => '获取商品列表',
                 'GET /api/products/{sku}' => '获取商品详情',
+                'GET /api/audit/logs' => '获取审计日志（仅admin）',
             ],
         ]);
     } else {

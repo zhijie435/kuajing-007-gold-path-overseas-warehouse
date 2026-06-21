@@ -11,13 +11,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/../core/Response.php';
 require_once __DIR__ . '/../core/Request.php';
 require_once __DIR__ . '/../core/Database.php';
+require_once __DIR__ . '/../core/PermissionGuard.php';
+require_once __DIR__ . '/../core/AuditLogger.php';
+
+$guard = new PermissionGuard();
+$audit = new AuditLogger();
 
 try {
     $method = Request::getMethod();
     $uri = Request::getUri();
     $db = Database::getInstance();
 
-    if ($method === 'GET' && strpos($uri, '/api/products') !== false) {
+    if ($method === 'GET' && strpos($uri, '/api/products') !== false && !preg_match('/\/api\/products\/[^\/]+/', $uri)) {
+        $permCheck = $guard->check('product_list');
+        if (!$permCheck['allowed']) {
+            $audit->logPermissionDenied('product_list', $permCheck['reason'] ?? 'unknown', [
+                'role' => $permCheck['role'],
+            ]);
+            Response::unauthorized($permCheck['message']);
+        }
+
         $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
         $pageSize = isset($_GET['page_size']) ? min(100, (int)$_GET['page_size']) : 50;
         $keyword = $_GET['keyword'] ?? '';
@@ -52,6 +65,13 @@ try {
             $item['total_stock'] = array_sum(array_column($inv, 'quantity'));
         }
 
+        $audit->log(AuditLogger::ACTION_PRODUCT_LIST, AuditLogger::RESULT_SUCCESS, [
+            'role' => $permCheck['role'],
+            'target_type' => 'product',
+            'response_code' => 200,
+            'extra_data' => ['keyword' => $keyword, 'total' => $total],
+        ]);
+
         Response::success([
             'list' => $list,
             'total' => $total,
@@ -61,6 +81,14 @@ try {
     }
 
     if ($method === 'GET' && preg_match('/\/api\/products\/([^\/]+)/', $uri, $matches)) {
+        $permCheck = $guard->check('product_detail');
+        if (!$permCheck['allowed']) {
+            $audit->logPermissionDenied('product_detail', $permCheck['reason'] ?? 'unknown', [
+                'role' => $permCheck['role'],
+            ]);
+            Response::unauthorized($permCheck['message']);
+        }
+
         $sku = $matches[1];
         $product = $db->fetchOne("SELECT * FROM products WHERE sku = ? AND status = 1", [$sku]);
         if (!$product) {
@@ -74,6 +102,14 @@ try {
             [$sku]
         );
         $product['inventories'] = $inv;
+
+        $audit->log(AuditLogger::ACTION_PRODUCT_DETAIL, AuditLogger::RESULT_SUCCESS, [
+            'role' => $permCheck['role'],
+            'target_type' => 'product',
+            'target_id' => $sku,
+            'response_code' => 200,
+        ]);
+
         Response::success($product);
     }
 

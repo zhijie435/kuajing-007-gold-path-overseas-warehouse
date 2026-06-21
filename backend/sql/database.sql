@@ -150,11 +150,126 @@ CREATE TABLE IF NOT EXISTS `warehouse_callback_logs` (
     `response_body` TEXT COMMENT '响应原文',
     `is_processed` TINYINT NOT NULL DEFAULT 0 COMMENT '是否处理成功 0-否 1-是',
     `error_message` VARCHAR(500) DEFAULT NULL,
+    `client_ip` VARCHAR(45) DEFAULT NULL COMMENT '回调请求IP地址',
+    `user_agent` VARCHAR(500) DEFAULT NULL COMMENT '回调请求User Agent',
+    `auth_method` VARCHAR(32) DEFAULT NULL COMMENT '认证方式: TOKEN, SIGNATURE, NONE',
+    `auth_result` TINYINT DEFAULT 1 COMMENT '认证结果 0-失败 1-成功',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY `idx_order_no` (`order_no`),
     KEY `idx_warehouse_order` (`warehouse_order_no`),
-    KEY `idx_created_at` (`created_at`)
+    KEY `idx_created_at` (`created_at`),
+    KEY `idx_client_ip` (`client_ip`),
+    KEY `idx_auth_result` (`auth_result`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库回调日志表';
+
+-- API权限表
+CREATE TABLE IF NOT EXISTS `api_permissions` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `app_id` VARCHAR(64) NOT NULL UNIQUE COMMENT '应用ID',
+    `app_name` VARCHAR(100) NOT NULL COMMENT '应用名称',
+    `api_key` VARCHAR(128) NOT NULL COMMENT 'API Key',
+    `api_secret` VARCHAR(128) NOT NULL COMMENT 'API Secret',
+    `permission_scope` VARCHAR(500) NOT NULL DEFAULT '*' COMMENT '权限范围，逗号分隔: warehouse:route, warehouse:read, fulfillment:callback, fulfillment:read, order:create, order:read, order:cancel, product:read',
+    `ip_whitelist` TEXT COMMENT 'IP白名单，逗号分隔',
+    `rate_limit` INT NOT NULL DEFAULT 100 COMMENT '每分钟请求限制',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态 1-启用 0-停用',
+    `expires_at` DATETIME DEFAULT NULL COMMENT '过期时间，NULL表示永不过期',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY `idx_app_id` (`app_id`),
+    KEY `idx_api_key` (`api_key`),
+    KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='API权限配置表';
+
+-- 仓库路由审计日志表
+CREATE TABLE IF NOT EXISTS `warehouse_route_audit_logs` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `trace_id` VARCHAR(64) NOT NULL COMMENT '追踪ID',
+    `app_id` VARCHAR(64) DEFAULT NULL COMMENT '调用方应用ID',
+    `request_items` TEXT COMMENT '请求商品列表JSON',
+    `shipping_country` VARCHAR(50) DEFAULT NULL COMMENT '收货国家',
+    `shipping_state` VARCHAR(100) DEFAULT NULL COMMENT '收货州/省',
+    `total_weight` DECIMAL(10,2) DEFAULT NULL COMMENT '总重量',
+    `selected_warehouse_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '选中的仓库ID',
+    `selected_warehouse_code` VARCHAR(32) DEFAULT NULL COMMENT '选中的仓库编码',
+    `selected_warehouse_name` VARCHAR(100) DEFAULT NULL COMMENT '选中的仓库名称',
+    `shipping_cost` DECIMAL(10,2) DEFAULT NULL COMMENT '运费',
+    `avg_shipping_days` DECIMAL(5,2) DEFAULT NULL COMMENT '平均配送天数',
+    `estimated_delivery_date` DATE DEFAULT NULL COMMENT '预计送达日期',
+    `alternatives` TEXT COMMENT '备选仓库列表JSON',
+    `route_result` TINYINT NOT NULL DEFAULT 0 COMMENT '路由结果 0-失败 1-成功',
+    `error_type` VARCHAR(64) DEFAULT NULL COMMENT '错误类型',
+    `error_message` VARCHAR(500) DEFAULT NULL COMMENT '错误信息',
+    `client_ip` VARCHAR(45) DEFAULT NULL COMMENT '客户端IP',
+    `user_agent` VARCHAR(500) DEFAULT NULL COMMENT 'User Agent',
+    `request_at` DATETIME NOT NULL COMMENT '请求时间',
+    `response_at` DATETIME NOT NULL COMMENT '响应时间',
+    `duration_ms` INT NOT NULL COMMENT '耗时(毫秒)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_trace_id` (`trace_id`),
+    KEY `idx_app_id` (`app_id`),
+    KEY `idx_selected_warehouse` (`selected_warehouse_id`),
+    KEY `idx_route_result` (`route_result`),
+    KEY `idx_request_at` (`request_at`),
+    KEY `idx_client_ip` (`client_ip`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库路由审计日志表';
+
+-- API调用日志表
+CREATE TABLE IF NOT EXISTS `api_access_logs` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `trace_id` VARCHAR(64) NOT NULL COMMENT '追踪ID',
+    `app_id` VARCHAR(64) DEFAULT NULL COMMENT '调用方应用ID',
+    `api_key` VARCHAR(128) DEFAULT NULL COMMENT '使用的API Key',
+    `request_method` VARCHAR(10) NOT NULL COMMENT '请求方法',
+    `request_uri` VARCHAR(500) NOT NULL COMMENT '请求URI',
+    `request_params` TEXT COMMENT '请求参数JSON',
+    `response_code` INT NOT NULL DEFAULT 0 COMMENT '响应业务码',
+    `response_message` VARCHAR(500) DEFAULT NULL COMMENT '响应消息',
+    `http_status_code` INT NOT NULL DEFAULT 0 COMMENT 'HTTP状态码',
+    `auth_result` TINYINT DEFAULT 1 COMMENT '认证结果 0-失败 1-成功',
+    `auth_error` VARCHAR(200) DEFAULT NULL COMMENT '认证失败原因',
+    `client_ip` VARCHAR(45) DEFAULT NULL COMMENT '客户端IP',
+    `user_agent` VARCHAR(500) DEFAULT NULL COMMENT 'User Agent',
+    `request_at` DATETIME NOT NULL COMMENT '请求时间',
+    `response_at` DATETIME NOT NULL COMMENT '响应时间',
+    `duration_ms` INT NOT NULL COMMENT '耗时(毫秒)',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_trace_id` (`trace_id`),
+    KEY `idx_app_id` (`app_id`),
+    KEY `idx_api_key` (`api_key`),
+    KEY `idx_request_uri` (`request_uri`(100)),
+    KEY `idx_auth_result` (`auth_result`),
+    KEY `idx_request_at` (`request_at`),
+    KEY `idx_client_ip` (`client_ip`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='API访问日志表';
+
+-- 审计日志表
+CREATE TABLE IF NOT EXISTS `audit_logs` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `trace_id` VARCHAR(64) NOT NULL COMMENT '追踪ID',
+    `action` VARCHAR(64) NOT NULL COMMENT '操作类型: warehouse_route, warehouse_list, warehouse_inventory, fulfillment_callback, permission_denied',
+    `result` VARCHAR(16) NOT NULL COMMENT '结果: success, failure',
+    `user_id` VARCHAR(64) DEFAULT NULL COMMENT '用户ID',
+    `role` VARCHAR(32) DEFAULT NULL COMMENT '角色: admin, warehouse_operator, viewer',
+    `warehouse_code` VARCHAR(32) DEFAULT NULL COMMENT '仓库编码',
+    `target_type` VARCHAR(32) DEFAULT NULL COMMENT '目标类型: order, warehouse, permission',
+    `target_id` VARCHAR(64) DEFAULT NULL COMMENT '目标ID',
+    `client_ip` VARCHAR(64) DEFAULT NULL COMMENT '客户端IP',
+    `user_agent` VARCHAR(500) DEFAULT NULL COMMENT '用户代理',
+    `request_uri` VARCHAR(500) DEFAULT NULL COMMENT '请求URI',
+    `request_method` VARCHAR(16) DEFAULT NULL COMMENT '请求方法',
+    `request_params` TEXT COMMENT '请求参数',
+    `response_code` INT DEFAULT 0 COMMENT '响应码',
+    `error_message` VARCHAR(500) DEFAULT NULL COMMENT '错误信息',
+    `extra_data` JSON DEFAULT NULL COMMENT '扩展数据',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY `idx_trace_id` (`trace_id`),
+    KEY `idx_action` (`action`),
+    KEY `idx_user_id` (`user_id`),
+    KEY `idx_warehouse_code` (`warehouse_code`),
+    KEY `idx_created_at` (`created_at`),
+    KEY `idx_target` (`target_type`, `target_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审计日志表';
 
 -- 初始化测试数据
 INSERT INTO `warehouses` (`warehouse_code`, `warehouse_name`, `country`, `state`, `city`, `address`, `latitude`, `longitude`, `status`, `priority`) VALUES
@@ -207,3 +322,9 @@ INSERT INTO `warehouse_inventories` (`warehouse_id`, `product_id`, `sku`, `quant
 (5, 1, 'SKU001', 200, 0),
 (5, 3, 'SKU003', 300, 0),
 (5, 4, 'SKU004', 800, 0);
+
+-- 初始化API权限测试数据
+INSERT INTO `api_permissions` (`app_id`, `app_name`, `api_key`, `api_secret`, `permission_scope`, `ip_whitelist`, `rate_limit`, `status`) VALUES
+('order_system', '订单系统', 'ak_order_001', 'sk_order_secret_2024', 'warehouse:route,warehouse:read,fulfillment:read,order:create,order:read,order:cancel,product:read', '127.0.0.1,192.168.1.0/24', 100, 1),
+('wms_system', '仓库WMS系统', 'ak_wms_001', 'sk_wms_secret_2024', 'fulfillment:callback,fulfillment:read,order:read', NULL, 500, 1),
+('admin_system', '管理后台', 'ak_admin_001', 'sk_admin_secret_2024', '*', '127.0.0.1', 200, 1);
