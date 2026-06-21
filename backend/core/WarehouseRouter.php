@@ -453,4 +453,112 @@ class WarehouseRouter {
     }
 
     public function getWarehouseByCode($warehouseCode) {
-        if (empty
+        if (empty($warehouseCode)) {
+            return null;
+        }
+        $sql = "SELECT w.*,
+                (SELECT COUNT(*) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as sku_count,
+                (SELECT SUM(wi.quantity) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as total_stock
+                FROM warehouses w
+                WHERE w.warehouse_code = ? LIMIT 1";
+        return $this->db->fetchOne($sql, [$warehouseCode]);
+    }
+
+    public function getWarehouseInventory($warehouseId, $sku = null, $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'warehouse_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
+        if (empty($warehouseId)) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '缺少仓库ID参数';
+            return [];
+        }
+
+        $warehouse = $this->db->fetchOne(
+            "SELECT id, warehouse_code FROM warehouses WHERE id = ? LIMIT 1",
+            [$warehouseId]
+        );
+
+        $permissionCheck['warehouse_found'] = !empty($warehouse);
+        if (!$warehouse) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '仓库不存在';
+            return [];
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $warehouse['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $warehouse['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权访问仓库 [{$warehouse['warehouse_code']}]，当前仅可访问 [{$scopeWarehouseCode}]";
+            return [];
+        }
+
+        $sql = "SELECT wi.*, p.name as product_name, p.weight, p.price, p.image_url
+                FROM warehouse_inventories wi
+                JOIN products p ON wi.product_id = p.id
+                WHERE wi.warehouse_id = ?";
+        $params = [$warehouseId];
+        if ($sku) {
+            $sql .= " AND wi.sku = ?";
+            $params[] = $sku;
+        }
+        $sql .= " ORDER BY wi.id ASC";
+
+        $permissionCheck['passed'] = true;
+        $permissionCheck['message'] = '权限校验通过';
+        return $this->db->fetchAll($sql, $params);
+    }
+
+    public function getWarehouseDetail($warehouseId, $scopeWarehouseCode = null, &$permissionCheck = []) {
+        $permissionCheck = [
+            'passed' => true,
+            'warehouse_found' => false,
+            'in_scope' => true,
+            'scope_warehouse_code' => $scopeWarehouseCode,
+            'actual_warehouse_code' => null,
+            'message' => '',
+        ];
+
+        if (empty($warehouseId)) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '缺少仓库ID参数';
+            return null;
+        }
+
+        $warehouse = $this->db->fetchOne(
+            "SELECT w.*,
+                    (SELECT COUNT(*) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as sku_count,
+                    (SELECT SUM(wi.quantity) FROM warehouse_inventories wi WHERE wi.warehouse_id = w.id) as total_stock
+             FROM warehouses w WHERE w.id = ? LIMIT 1",
+            [$warehouseId]
+        );
+
+        $permissionCheck['warehouse_found'] = !empty($warehouse);
+        if (!$warehouse) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['message'] = '仓库不存在';
+            return null;
+        }
+
+        $permissionCheck['actual_warehouse_code'] = $warehouse['warehouse_code'];
+
+        if (!empty($scopeWarehouseCode) && $warehouse['warehouse_code'] !== $scopeWarehouseCode) {
+            $permissionCheck['passed'] = false;
+            $permissionCheck['in_scope'] = false;
+            $permissionCheck['message'] = "无权访问仓库 [{$warehouse['warehouse_code']}]，当前仅可访问 [{$scopeWarehouseCode}]";
+            return null;
+        }
+
+        $permissionCheck['passed'] = true;
+        $permissionCheck['message'] = '权限校验通过';
+        return $warehouse;
+    }
+}
